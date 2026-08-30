@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bible Lookup for LyricDisplay</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">Б</div>
+          <div>
+            <h1>Bible Lookup</h1>
+            <p>Синодальный перевод · LyricDisplay</p>
+          </div>
+        </div>
+        <div class="connection-area">
+          <span id="connection-dot" class="status-dot status-offline"></span>
+          <span id="connection-label">LyricDisplay не подключён</span>
+          <label class="language-control" aria-label="Язык интерфейса"><span>Язык</span><select id="language-select"><option value="ru">Русский</option><option value="en">English</option></select></label>
+          <button id="settings-button" class="button button-secondary" type="button">Подключение</button>
+        </div>
+      </header>
+
+      <section class="hero">
+        <div>
+          <p class="eyebrow">ЛОКАЛЬНЫЙ ПОИСК И ВЫВОД</p>
+          <h2>Найдите место — выведите его на экран</h2>
+          <p class="lead">Текст хранится внутри приложения. При выводе он передаётся только в запущенный на этом компьютере LyricDisplay.</p>
+        </div>
+        <div class="translation-card">
+          <span class="translation-label">ПЕРЕВОД</span>
+          <div class="translation-switch" role="group" aria-label="Выбор перевода">
+            <button id="translation-synodal" class="translation-button is-active" type="button">Синодальный</button>
+            <button id="translation-modern" class="translation-button" type="button">Современный русский</button>
+          </div>
+          <span id="database-stat">Загрузка базы…</span>
+          <div class="license-row"><span id="license-status" class="license-status">Лицензия проверяется…</span><button id="license-check-button" class="license-check-button" type="button">Проверить</button></div>
+        </div>
+      </section>
+
+      <section class="lookup-panel" aria-label="Поиск места Писания">
+        <div class="form-grid">
+          <label class="field field-book">
+            <span>Книга</span>
+            <input id="book-input" list="book-list" autocomplete="off" placeholder="Например: Иоанна" />
+            <datalist id="book-list"></datalist>
+          </label>
+          <label class="field">
+            <span>Глава</span>
+            <input id="chapter-input" inputmode="numeric" type="number" min="1" placeholder="3" />
+          </label>
+          <label class="field">
+            <span>Стих или диапазон</span>
+            <input id="verse-input" inputmode="numeric" placeholder="16 или 16–18" />
+          </label>
+          <button id="find-button" class="button button-find" type="button">Найти</button>
+        </div>
+        <p class="hint">Можно вставить всю ссылку в поле «Книга»: <kbd>Иоанна 3:16</kbd>, <kbd>Ин 3:16</kbd> или <kbd>Ис 53:4–6</kbd>.</p>
+      </section>
+
+      <section id="message-box" class="message message-info" role="status">Введите ссылку на место Писания или выберите книгу, главу и стих.</section>
+
+      <section class="listener-panel" aria-label="Слушатель проповеди">
+        <div class="listener-heading">
+          <div><p class="eyebrow">СЛУШАТЕЛЬ ПРОПОВЕДИ</p><h3>Речь → место Писания → экран</h3></div>
+          <div class="listener-status-wrap"><span id="listener-dot" class="status-dot status-offline"></span><span id="listener-status">Слушатель выключен</span></div>
+        </div>
+        <div class="listener-grid">
+          <div class="listener-copy"><p>Распознаёт упомянутые ссылки вроде «Иоанна, глава 3, стих 16». В режиме «Авто» выводит только при достаточной уверенности и не повторяет одно место подряд.</p><span id="listener-transcript" class="listener-transcript">Здесь появится распознанная речь…</span></div>
+          <div class="listener-controls">
+            <button id="listener-toggle" class="button button-output" type="button">Начать слушать</button>
+            <label class="listener-select"><span>Микрофон</span><select id="microphone-select"><option value="">Определение устройств…</option></select></label>
+            <label class="listener-select"><span>Аудио</span><select id="audio-backend-select"><option value="standard">Windows audio</option><option value="asio">ASIO bridge</option></select></label>
+            <label class="listener-select"><span>ASIO-драйвер</span><select id="asio-driver-select"><option value="">Драйвер не выбран</option></select></label>
+            <label class="listener-select"><span>Режим</span><select id="listener-mode"><option value="auto">Авто</option><option value="suggest">Предлагать</option></select></label>
+            <label class="listener-range"><span>Уверенность <b id="listener-threshold-value">78%</b></span><input id="listener-threshold" type="range" min="55" max="95" value="78" step="1" /></label>
+          </div>
+        </div>
+        <div class="listener-foot"><span id="microphone-help">Микрофон используется только пока слушатель включён.</span><span id="listener-detected">Ссылок не найдено</span></div>
+      </section>
+
+      <div class="workspace-grid">
+      <section class="word-search-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">ПОИСК ПО СЛОВАМ</p>
+            <h3>Найдите стих по фразе или слову</h3>
+          </div>
+          <span id="word-search-count" class="section-meta">Поиск по всей Библии</span>
+        </div>
+        <div class="word-search-form">
+          <input id="word-search-input" type="search" autocomplete="off" placeholder="Например: ибо так возлюбил" />
+          <button id="word-search-button" class="button button-find" type="button">Искать слова</button>
+        </div>
+        <p class="hint">Результаты можно сразу добавить в план. Ищутся все введённые слова без учёта регистра.</p>
+        <div id="word-results" class="word-results"></div>
+      </section>
+
+      <section class="plan-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">ПЛАН ПОКАЗА</p>
+            <h3>Подготовленные места</h3>
+          </div>
+          <span id="plan-count" class="section-meta">0 мест</span>
+        </div>
+        <p class="hint plan-hint">Добавьте сюда стихи заранее, а во время служения просто нажимайте «Вывести».</p>
+        <div id="plan-empty" class="plan-empty">План пока пуст. Найдите место по ссылке или словам и добавьте его сюда.</div>
+        <div id="plan-list" class="plan-list"></div>
+      </section>
+      </div>
+
+      <section id="result-card" class="result-card is-hidden" aria-live="polite">
+        <div class="result-header">
+          <div>
+            <p class="eyebrow">НАЙДЕННОЕ МЕСТО</p>
+            <h3 id="reference-title">—</h3>
+          </div>
+          <div class="result-actions">
+            <button id="copy-button" class="button button-secondary" type="button">Копировать</button>
+            <button id="add-to-plan-button" class="button button-secondary" type="button">＋ В план</button>
+            <button id="output-button" class="button button-output" type="button">Вывести в LyricDisplay</button>
+          </div>
+        </div>
+        <div id="verse-content" class="verse-content"></div>
+        <p class="output-note">При выводе ссылка и текст загружаются в LyricDisplay единым блоком, сразу выбираются и включают общий показ на Output и Stage.</p>
+      </section>
+
+      <section class="quick-links">
+        <span>Быстрый поиск:</span>
+        <button class="link-button quick-reference" data-reference="Иоанна 3:16" type="button">Иоанна 3:16</button>
+        <button class="link-button quick-reference" data-reference="Псалтирь 22:1" type="button">Псалом 22:1</button>
+        <button class="link-button quick-reference" data-reference="К Римлянам 8:28" type="button">Римлянам 8:28</button>
+      </section>
+    </main>
+
+    <dialog id="settings-dialog" class="settings-dialog">
+      <form method="dialog" id="settings-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">ЛОКАЛЬНОЕ ПОДКЛЮЧЕНИЕ</p>
+            <h2>LyricDisplay</h2>
+          </div>
+          <button class="close-button" aria-label="Закрыть" value="cancel" type="submit">×</button>
+        </div>
+        <p class="dialog-copy">Откройте LyricDisplay на этом компьютере. Приложение использует его локальный адрес и одноразовый 6-значный код подключения.</p>
+        <label class="field">
+          <span>Адрес LyricDisplay</span>
+          <input id="server-url-input" type="url" value="http://localhost:4000" />
+        </label>
+        <label class="field">
+          <span>Код подключения</span>
+          <div class="input-action">
+            <input id="join-code-input" inputmode="numeric" maxlength="6" placeholder="123456" />
+            <button id="read-code-button" class="button button-secondary" type="button">Получить код</button>
+          </div>
+        </label>
+        <p class="small-note">Если получение кода не сработало, откройте в LyricDisplay <strong>Tools → Connect Mobile Controller</strong> и введите отображаемый код вручную. Код меняется после перезапуска LyricDisplay.</p>
+        <div class="dialog-actions">
+          <button id="test-connection-button" class="button button-secondary" type="button">Проверить</button>
+          <button id="save-settings-button" class="button button-output" value="default" type="submit">Сохранить и подключить</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="../node_modules/socket.io-client/dist/socket.io.min.js"></script>
+    <script src="renderer.js"></script>
+  </body>
+</html>

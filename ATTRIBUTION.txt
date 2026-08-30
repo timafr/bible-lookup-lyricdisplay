@@ -1,0 +1,12 @@
+Bible Lookup for LyricDisplay — Attribution
+
+Included Bible text: Russian Synodal Translation (Синодальный перевод).
+
+Source data: rus-synodal.zefania.xml from the Open Bibles project:
+https://github.com/seven1m/open-bibles
+
+The Open Bibles translation list marks “Russian Synodal Translation” as Public Domain.
+
+The source data was converted locally into a compact JSON structure solely for offline lookup by this application. No text is retrieved from the internet during normal use.
+
+LyricDisplay is a separate product. This application uses its documented local REST and Socket.IO interfaces on the computer where LyricDisplay is running. LyricDisplay: https://lyricdisplay.app/ ; source and API specifications: https://github.com/PeterAlaks/lyric-display-app
