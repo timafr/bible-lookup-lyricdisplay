@@ -63,6 +63,22 @@
 
       <section id="message-box" class="message message-info" role="status">Введите ссылку на место Писания или выберите книгу, главу и стих.</section>
 
+      <section class="listener-panel" aria-label="Слушатель проповеди">
+        <div class="listener-heading">
+          <div><p class="eyebrow">СЛУШАТЕЛЬ ПРОПОВЕДИ</p><h3>Речь → место Писания → экран</h3></div>
+          <div class="listener-status-wrap"><span id="listener-dot" class="status-dot status-offline"></span><span id="listener-status">Слушатель выключен</span></div>
+        </div>
+        <div class="listener-grid">
+          <div class="listener-copy"><p>Распознаёт упомянутые ссылки вроде «Иоанна, глава 3, стих 16». В режиме «Авто» выводит только при достаточной уверенности и не повторяет одно место подряд.</p><span id="listener-transcript" class="listener-transcript">Здесь появится распознанная речь…</span></div>
+          <div class="listener-controls">
+            <button id="listener-toggle" class="button button-output" type="button">Начать слушать</button>
+            <label class="listener-select"><span>Режим</span><select id="listener-mode"><option value="auto">Авто</option><option value="suggest">Предлагать</option></select></label>
+            <label class="listener-range"><span>Уверенность <b id="listener-threshold-value">78%</b></span><input id="listener-threshold" type="range" min="55" max="95" value="78" step="1" /></label>
+          </div>
+        </div>
+        <div class="listener-foot"><span>Микрофон используется только пока слушатель включён.</span><span id="listener-detected">Ссылок не найдено</span></div>
+      </section>
+
       <div class="workspace-grid">
       <section class="word-search-panel">
         <div class="section-heading">

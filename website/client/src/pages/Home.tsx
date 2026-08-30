@@ -96,7 +96,7 @@ export default function Home() {
       </section>
 
       <section className="feature-section section-pad" id="features">
-        <div className="feature-copy"><SectionLabel>ПОДГОТОВКА</SectionLabel><h2>Ваш план показа<br /><em>в одном месте.</em></h2><p>Добавляйте места из обычного поиска или полнотекстового поиска. В нужный момент нажмите «Вывести» — порядок уже подготовлен.</p><div className="feature-checks"><span><Check size={14} />Поиск по словам</span><span><Check size={14} />План сохраняется</span><span><Check size={14} />Вывод на Output и Stage</span></div></div>
+        <div className="feature-copy"><SectionLabel>ПОДГОТОВКА</SectionLabel><h2>Ваш план показа<br /><em>в одном месте.</em></h2><p>Добавляйте места из обычного поиска или полнотекстового поиска в план показа. В релизе 1.4 появился слушатель проповеди с авто-поиском ссылок по речи. Нажмите «Вывести» — порядок уже подготовлен.</p><div className="feature-checks"><span><Check size={14} />Поиск по словам</span><span><Check size={14} />План сохраняется</span><span><Check size={14} />Вывод на Output и Stage</span></div></div>
         <div className="plan-visual"><img src={planImage} alt="План показа Bible Lookup" /><div className="plan-callout"><span className="callout-dot" />ПЛАН ПОКАЗА <strong>готов</strong></div></div>
       </section>
 
@@ -109,7 +109,7 @@ export default function Home() {
       </section>
 
       <section className="download-section section-pad" id="download">
-        <div className="download-panel"><div className="download-copy"><SectionLabel>ТЕКУЩИЙ РЕЛИЗ</SectionLabel><h2>Сделайте следующий<br /><em>показ спокойнее.</em></h2><p>Портативная версия для Windows x64. Распакуйте архив, подключите LyricDisplay и начните с места Писания. Второй перевод подключается только при наличии разрешения правообладателя.</p><a className="button button-light" href="/manus-storage/Bible-Lookup-LyricDisplay-1.3.0-Windows-x64_01c13c29.zip" download>Скачать Bible Lookup <Download size={17} /></a></div><div className="download-meta"><span>v1.3.0</span><span>Windows x64</span><span>326 MB</span></div></div>
+        <div className="download-panel"><div className="download-copy"><SectionLabel>ТЕКУЩИЙ РЕЛИЗ</SectionLabel><h2>Сделайте следующий<br /><em>показ спокойнее.</em></h2><p>Портативная версия для Windows x64. Распакуйте архив, подключите LyricDisplay и начните с места Писания. Второй перевод подключается только при наличии разрешения правообладателя.</p><a className="button button-light" href="/manus-storage/Bible-Lookup-LyricDisplay-1.4.0-Windows-x64_987bed76.zip" download>Скачать Bible Lookup <Download size={17} /></a></div><div className="download-meta"><span>v1.4.0</span><span>Windows x64</span><span>326 MB</span></div></div>
       </section>
 
       <footer className="site-footer"><a className="brand footer-brand" href="#top"><img src={markImage} alt="" className="brand-mark" /><span className="brand-lockup"><strong>Bible</strong> Lookup</span></a><p>Точный инструмент для тех, кто выводит текст на экран.</p><div className="footer-links"><a href="#license">Источники и лицензии</a><a href="https://github.com" target="_blank" rel="noreferrer">GitHub <ExternalLink size={12} /></a></div><span className="footer-year">2026</span></footer>

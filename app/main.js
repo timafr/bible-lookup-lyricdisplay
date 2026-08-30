@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, session } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -55,6 +55,10 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(permission === 'media');
+  });
+
   ipcMain.handle('bible:load', () => loadBibleData());
   ipcMain.handle('preferences:load', () => readPreferences());
   ipcMain.handle('preferences:save', (_event, preferences) => {

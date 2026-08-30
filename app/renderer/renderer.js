@@ -10,6 +10,7 @@ const state = {
   language: 'ru',
   translationId: 'synodal',
   licenseVerified: false,
+  listener: { active: false, recognition: null, lastKey: '', lastAt: 0, mode: 'auto', threshold: 78, transcript: '' },
 };
 
 const elements = {
@@ -47,6 +48,14 @@ const elements = {
   translationModern: document.querySelector('#translation-modern'),
   licenseStatus: document.querySelector('#license-status'),
   licenseCheckButton: document.querySelector('#license-check-button'),
+  listenerDot: document.querySelector('#listener-dot'),
+  listenerStatus: document.querySelector('#listener-status'),
+  listenerTranscript: document.querySelector('#listener-transcript'),
+  listenerToggle: document.querySelector('#listener-toggle'),
+  listenerMode: document.querySelector('#listener-mode'),
+  listenerThreshold: document.querySelector('#listener-threshold'),
+  listenerThresholdValue: document.querySelector('#listener-threshold-value'),
+  listenerDetected: document.querySelector('#listener-detected'),
 };
 
 function normalize(value) {
@@ -127,6 +136,20 @@ function selectTranslation(id) {
 function setConnection(connected, label) {
   elements.connectionDot.className = `status-dot ${connected ? 'status-online' : 'status-offline'}`;
   elements.connectionLabel.textContent = label;
+}
+
+function setListenerStatus(active, text) {
+  elements.listenerDot.className = `status-dot ${active ? 'status-online' : 'status-offline'}`;
+  elements.listenerStatus.textContent = text;
+}
+
+function updateListenerControls() {
+  elements.listenerMode.value = state.listener.mode;
+  elements.listenerThreshold.value = String(state.listener.threshold);
+  elements.listenerThresholdValue.textContent = `${state.listener.threshold}%`;
+  elements.listenerToggle.textContent = state.listener.active ? 'Пауза слушателя' : 'Начать слушать';
+  elements.listenerToggle.classList.toggle('button-output', !state.listener.active);
+  elements.listenerToggle.classList.toggle('button-secondary', state.listener.active);
 }
 
 function setBusy(button, busy, busyLabel) {
@@ -357,6 +380,99 @@ function renderWordResults(results, query) {
     row.append(textWrap, output, add);
     elements.wordResults.appendChild(row);
   });
+}
+
+function parseSpokenReference(transcript) {
+  const source = String(transcript || '').replace(/[.,;!?]/g, ' ').replace(/\s+/g, ' ').trim();
+  const patterns = [
+    /^(.+?)\s+(\d+)\s*(?::|глава\s+)(\d+)(?:\s*(?:-|до)\s*(\d+))?/iu,
+    /^(.+?)\s+глава\s+(\d+)\s+стих(?:а)?\s+(\d+)(?:\s*(?:-|до|по)\s*(\d+))?/iu,
+  ];
+  for (const pattern of patterns) {
+    const match = source.match(pattern);
+    if (!match) continue;
+    const book = resolveBook(match[1]);
+    if (!book) continue;
+    const result = resultFromPosition({ bookId: book.id, chapterNumber: Number(match[2]), firstVerse: Number(match[3]), lastVerse: Number(match[4] || match[3]) });
+    if (result) return result;
+  }
+  return null;
+}
+
+async function handleListenerResult(transcript, confidence = 0) {
+  state.listener.transcript = transcript;
+  elements.listenerTranscript.textContent = transcript || 'Здесь появится распознанная речь…';
+  const result = parseSpokenReference(transcript);
+  if (!result) return;
+  const key = planKey(result);
+  const effectiveConfidence = confidence > 0 ? confidence * 100 : 78;
+  elements.listenerDetected.textContent = `${resultReference(result)} · ${Math.round(effectiveConfidence)}%`;
+  if (state.listener.mode !== 'auto' || effectiveConfidence < state.listener.threshold) {
+    renderResult(result);
+    showMessage(`Найдено в речи: ${resultReference(result)}. Проверьте место и нажмите «Вывести».`, 'info');
+    return;
+  }
+  const now = Date.now();
+  if (state.listener.lastKey === key && now - state.listener.lastAt < 10000) return;
+  state.listener.lastKey = key;
+  state.listener.lastAt = now;
+  state.result = result;
+  renderResult(result);
+  await outputToLyricDisplay();
+  showMessage(`Автоматически выведено: ${resultReference(result)}.`, 'success');
+}
+
+function createSpeechRecognition() {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Recognition) throw new Error('Распознавание речи недоступно в этой версии Windows/Electron.');
+  const recognition = new Recognition();
+  recognition.lang = 'ru-RU';
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.onstart = () => setListenerStatus(true, 'Микрофон слушает');
+  recognition.onresult = async (event) => {
+    let transcript = '';
+    let confidence = 0;
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      transcript += event.results[index][0].transcript;
+      if (event.results[index].isFinal) confidence = event.results[index][0].confidence || 0;
+    }
+    await handleListenerResult(transcript, confidence);
+  };
+  recognition.onerror = (event) => {
+    if (event.error === 'not-allowed') showMessage('Доступ к микрофону запрещён. Разрешите микрофон для Bible Lookup в Windows.', 'error');
+    else if (event.error !== 'no-speech') showMessage(`Слушатель: ${event.error}`, 'error');
+    setListenerStatus(false, 'Ошибка микрофона');
+  };
+  recognition.onend = () => {
+    if (!state.listener.active) { setListenerStatus(false, 'Слушатель выключен'); return; }
+    window.setTimeout(() => { if (state.listener.active) recognition.start(); }, 250);
+  };
+  return recognition;
+}
+
+async function toggleListener() {
+  if (state.listener.active) {
+    state.listener.active = false;
+    state.listener.recognition?.stop();
+    setListenerStatus(false, 'Слушатель выключен');
+    updateListenerControls();
+    return;
+  }
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('Windows не предоставил доступ к микрофону этому приложению.');
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((track) => track.stop());
+    state.listener.recognition = createSpeechRecognition();
+    state.listener.active = true;
+    state.listener.recognition.start();
+    updateListenerControls();
+    showMessage('Слушатель включён. Говорите ссылку на место Писания.', 'success');
+  } catch (error) {
+    state.listener.active = false;
+    updateListenerControls();
+    showMessage(error.message || 'Не удалось получить доступ к микрофону.', 'error');
+  }
 }
 
 function searchWords() {
@@ -620,6 +736,8 @@ async function initialise() {
     state.bible = bible;
     state.preferences = { ...state.preferences, ...preferences };
     state.language = state.preferences.language === 'en' ? 'en' : 'ru';
+    state.listener.mode = state.preferences.listenerMode === 'suggest' ? 'suggest' : 'auto';
+    state.listener.threshold = Number(state.preferences.listenerThreshold) || 78;
     state.plan = Array.isArray(state.preferences.plan) ? state.preferences.plan.filter((item) => resultFromPosition(item)) : [];
     state.searchIndex = [];
     bible.books.forEach((book) => {
@@ -647,6 +765,8 @@ async function initialise() {
     renderPlan();
     applyLanguage(state.language);
     checkLicense();
+    updateListenerControls();
+    setListenerStatus(false, 'Слушатель выключен');
     showMessage(state.language === 'en' ? 'Synodal Bible database is ready. Start with a reference such as “John 3:16”.' : 'База Синодального перевода готова к поиску. Начните с ссылки, например «Иоанна 3:16».');
   } catch (error) {
     showMessage(`Не удалось загрузить офлайн-базу: ${error.message}`, 'error');
@@ -670,6 +790,10 @@ elements.languageSelect.addEventListener('change', async () => {
 elements.translationSynodal.addEventListener('click', () => selectTranslation('synodal'));
 elements.translationModern.addEventListener('click', () => selectTranslation('modern'));
 elements.licenseCheckButton.addEventListener('click', checkLicense);
+elements.listenerToggle.addEventListener('click', toggleListener);
+elements.listenerMode.addEventListener('change', async () => { state.listener.mode = elements.listenerMode.value; state.preferences = { ...state.preferences, listenerMode: state.listener.mode }; await window.desktopApi.savePreferences(state.preferences); });
+elements.listenerThreshold.addEventListener('input', () => { state.listener.threshold = Number(elements.listenerThreshold.value); elements.listenerThresholdValue.textContent = `${state.listener.threshold}%`; });
+elements.listenerThreshold.addEventListener('change', async () => { state.preferences = { ...state.preferences, listenerThreshold: state.listener.threshold }; await window.desktopApi.savePreferences(state.preferences); });
 elements.copy.addEventListener('click', copyResult);
 elements.addToPlan.addEventListener('click', () => state.result && addResultToPlan(state.result));
 elements.output.addEventListener('click', outputToLyricDisplay);

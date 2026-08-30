@@ -181,3 +181,22 @@ kbd { padding: 2px 5px; border: 1px solid var(--line); border-radius: 4px; color
 .license-check-button { padding: 0; border: 0; color: var(--blue-light); background: transparent; font-size: 11px; text-decoration: underline; }
 @media (max-width: 920px) { .connection-area { flex-wrap: wrap; justify-content: flex-end; } }
 @media (max-width: 760px) { .language-control { order: 3; width: 100%; justify-content: flex-end; } .translation-card { align-items: flex-start; } }
+
+/* Listener: quiet control surface for live sermon use. Keep status, controls, and transcript readable at a glance. */
+.listener-panel { margin: 18px 0; padding: 18px 20px; border: 1px solid rgba(93, 143, 206, 0.28); border-radius: 12px; background: linear-gradient(120deg, rgba(18, 42, 76, 0.82), rgba(8, 22, 42, 0.94)); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.12); }
+.listener-heading, .listener-grid, .listener-foot { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.listener-heading h3 { margin: 2px 0 0; color: var(--ink); font-size: 20px; }
+.listener-status-wrap { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.listener-grid { align-items: stretch; margin-top: 15px; }
+.listener-copy { flex: 1 1 auto; min-width: 0; }
+.listener-copy p { max-width: 650px; margin: 0 0 10px; color: var(--muted); line-height: 1.55; }
+.listener-transcript { display: block; min-height: 22px; padding: 8px 10px; border-left: 2px solid rgba(111, 224, 180, 0.62); color: #d9e7f5; background: rgba(2, 11, 23, 0.28); font-size: 13px; }
+.listener-controls { display: grid; grid-template-columns: auto 150px 190px; align-items: center; gap: 10px; }
+.listener-select, .listener-range { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
+.listener-select select { min-height: 34px; padding: 0 8px; border: 1px solid rgba(181, 210, 255, 0.22); border-radius: 6px; color: var(--ink); background: rgba(4, 14, 30, 0.52); }
+.listener-range input { width: 100%; accent-color: var(--green); }
+.listener-range b { color: var(--ink); font-weight: 600; }
+.listener-foot { margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(181, 210, 255, 0.12); color: var(--muted); font-size: 11px; }
+#listener-detected { color: #d9e7f5; }
+@media (max-width: 900px) { .listener-grid { align-items: stretch; flex-direction: column; } .listener-controls { grid-template-columns: 1fr 150px 1fr; } }
+@media (max-width: 620px) { .listener-heading, .listener-foot { align-items: flex-start; flex-direction: column; gap: 8px; } .listener-controls { grid-template-columns: 1fr; } .listener-foot { line-height: 1.4; } }
