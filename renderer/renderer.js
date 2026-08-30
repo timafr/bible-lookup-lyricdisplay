@@ -500,11 +500,65 @@ function createSpeechRecognition() {
   return recognition;
 }
 
+function updateMicLevel(value) {
+  const fill = document.getElementById('mic-level-fill');
+  const valueNode = document.getElementById('mic-level-value');
+  const percent = Math.max(0, Math.min(100, Math.round(value * 100)));
+  if (fill) fill.style.width = `${percent}%`;
+  if (valueNode) valueNode.textContent = `${percent}%`;
+}
+function stopMicrophoneMeter() {
+  if (window.__bibleLookupMicMeter) {
+    cancelAnimationFrame(window.__bibleLookupMicMeter.raf);
+    window.__bibleLookupMicMeter.context.close().catch(() => {});
+    window.__bibleLookupMicMeter = null;
+  }
+  updateMicLevel(0);
+}
+function startMicrophoneMeter(stream) {
+  stopMicrophoneMeter();
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+  const context = new AudioContextClass();
+  const analyser = context.createAnalyser();
+  analyser.fftSize = 256;
+  const source = context.createMediaStreamSource(stream);
+  source.connect(analyser);
+  const samples = new Uint8Array(analyser.fftSize);
+  const tick = () => {
+    analyser.getByteTimeDomainData(samples);
+    let sum = 0;
+    for (const sample of samples) { const centered = (sample - 128) / 128; sum += centered * centered; }
+    updateMicLevel(Math.min(1, Math.sqrt(sum / samples.length) * 3.2));
+    window.__bibleLookupMicMeter.raf = requestAnimationFrame(tick);
+  };
+  window.__bibleLookupMicMeter = { context, raf: 0 };
+  context.resume().catch(() => {});
+  tick();
+}
+async function testMicrophone() {
+  const statusNode = document.getElementById('mic-test-status');
+  const wasActive = state.listener.active;
+  try {
+    if (statusNode) statusNode.textContent = 'Открываю вход…';
+    const stream = state.listener.microphoneStream || await openMicrophoneStream();
+    startMicrophoneMeter(stream);
+    if (statusNode) statusNode.textContent = 'Сигнал идёт — скажите несколько слов';
+    if (!wasActive) await new Promise((resolve) => window.setTimeout(resolve, 4000));
+    if (!wasActive) { stopMicrophoneMeter(); stream.getTracks().forEach((track) => track.stop()); }
+    if (statusNode && !wasActive) statusNode.textContent = 'Проверка завершена';
+  } catch (error) {
+    stopMicrophoneMeter();
+    if (statusNode) statusNode.textContent = 'Проверка не пройдена';
+    showMessage(microphoneErrorText(error), 'error');
+  }
+}
 async function toggleListener() {
-  if (state.listener.active) { state.listener.active = false; state.listener.recognition?.stop(); state.listener.microphoneStream?.getTracks().forEach((track) => track.stop()); state.listener.microphoneStream = null; updateListenerControls(); setListenerStatus(false, 'Слушатель выключен'); return; }
+  if (state.listener.active) { state.listener.active = false; state.listener.recognition?.stop(); state.listener.microphoneStream?.getTracks().forEach((track) => track.stop()); state.listener.microphoneStream = null; stopMicrophoneMeter(); updateListenerControls(); setListenerStatus(false, 'Слушатель выключен'); return; }
   try {
     const stream = await openMicrophoneStream();
     state.listener.microphoneStream = stream;
+    startMicrophoneMeter(stream);
     state.preferences = { ...state.preferences, microphoneDeviceId: state.listener.selectedDeviceId, audioBackend: state.listener.audioBackend, asioDriver: state.listener.asioDriver };
     await window.desktopApi.savePreferences(state.preferences);
     state.listener.recognition = createRecognition();
@@ -841,7 +895,8 @@ elements.translationSynodal.addEventListener('click', () => selectTranslation('s
 elements.translationModern.addEventListener('click', () => selectTranslation('modern'));
 elements.licenseCheckButton.addEventListener('click', checkLicense);
 elements.listenerToggle.addEventListener('click', toggleListener);
-elements.microphoneSelect?.addEventListener('change', async () => { state.listener.selectedDeviceId = elements.microphoneSelect.value; state.preferences = { ...state.preferences, microphoneDeviceId: state.listener.selectedDeviceId }; await window.desktopApi.savePreferences(state.preferences); if (state.listener.active) { state.listener.active = false; state.listener.recognition?.stop(); state.listener.microphoneStream?.getTracks().forEach((track) => track.stop()); state.listener.microphoneStream = null; updateListenerControls(); setListenerStatus(false, 'Микрофон изменён — нажмите «Начать слушать»'); } });
+document.getElementById('microphone-test')?.addEventListener('click', testMicrophone);
+elements.microphoneSelect?.addEventListener('change', async () => { state.listener.selectedDeviceId = elements.microphoneSelect.value; state.preferences = { ...state.preferences, microphoneDeviceId: state.listener.selectedDeviceId }; await window.desktopApi.savePreferences(state.preferences); if (state.listener.active) { state.listener.active = false; state.listener.recognition?.stop(); state.listener.microphoneStream?.getTracks().forEach((track) => track.stop()); state.listener.microphoneStream = null; stopMicrophoneMeter(); updateListenerControls(); setListenerStatus(false, 'Микрофон изменён — нажмите «Начать слушать»'); } });
 elements.microphoneSelect?.addEventListener('focus', () => refreshMicrophones({ requestPermission: true }).catch(() => {}));
 elements.audioBackendSelect?.addEventListener('change', async () => { state.listener.audioBackend = elements.audioBackendSelect.value === 'asio' ? 'asio' : 'standard'; state.preferences = { ...state.preferences, audioBackend: state.listener.audioBackend }; await window.desktopApi.savePreferences(state.preferences); if (state.listener.audioBackend === 'asio') showMessage('ASIO bridge будет использоваться после установки нативного модуля; сейчас выбранный микрофон работает через Windows audio.', 'info'); });
 elements.listenerMode.addEventListener('change', async () => { state.listener.mode = elements.listenerMode.value; state.preferences = { ...state.preferences, listenerMode: state.listener.mode }; await window.desktopApi.savePreferences(state.preferences); });
