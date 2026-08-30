@@ -1,0 +1,66 @@
+import { resolveBackendOrigin } from '@/utils/network';
+
+const trimTrailingSlash = (value = '') => String(value).replace(/\/+$/, '');
+
+export const DEFAULT_SOURCE_SIZE = {
+  width: 1920,
+  height: 1080,
+  fps: 30,
+};
+
+export function createRoutePath(route, { hash = false } = {}) {
+  const normalizedRoute = String(route || '/').startsWith('/') ? String(route || '/') : `/${route}`;
+  return hash ? `/#${normalizedRoute}` : normalizedRoute;
+}
+
+export function createRouteUrl({ baseUrl, route, hash = false }) {
+  const origin = trimTrailingSlash(baseUrl || resolveBackendOrigin());
+  return `${origin}${createRoutePath(route, { hash })}`;
+}
+
+export function createPreviewUrl(routeId, { baseUrl, hash = false } = {}) {
+  const safeRouteId = String(routeId || '').replace(/^\/+/, '');
+  if (!safeRouteId) return '';
+  const rendererOrigin = typeof window !== 'undefined' ? window.location?.origin : '';
+  const origin = trimTrailingSlash(baseUrl || rendererOrigin || resolveBackendOrigin());
+  return `${origin}${createRoutePath(`/${safeRouteId}?preview=true`, { hash })}`;
+}
+
+export function createSourcePath({ outputId, mode = 'transparent', preview = false, hash = false }) {
+  const safeOutputId = outputId || 'output1';
+  const params = new URLSearchParams();
+
+  if (mode === 'projection') {
+    params.set('projection', 'true');
+  }
+  if (preview && safeOutputId.startsWith('output')) {
+    params.set('preview', 'true');
+  }
+
+  const query = params.toString();
+  const route = `/${safeOutputId}${query ? `?${query}` : ''}`;
+  return createRoutePath(route, { hash });
+}
+
+export function createSourceUrl({ baseUrl, outputId, mode = 'transparent', preview = false, hash = false }) {
+  const origin = trimTrailingSlash(baseUrl || resolveBackendOrigin());
+  return `${origin}${createSourcePath({ outputId, mode, preview, hash })}`;
+}
+
+export function formatOutputLabel(outputId = '') {
+  if (outputId === 'stage') return 'Stage Display';
+  if (outputId === 'time') return 'Timer Display';
+
+  const match = /^output(\d+)$/i.exec(outputId);
+  if (match) return `Output ${match[1]}`;
+
+  return outputId || 'Output';
+}
+
+export function formatSourceName(outputId = 'output1') {
+  return `LyricDisplay ${formatOutputLabel(outputId)}`;
+}
+
+export function getTransparentBrowserCss() {
+  return 'body { background-color: rgba(0, 0, 0, 0); margin: 0; overflow: hidden; }';
+}

@@ -1,0 +1,815 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Minus, Square, Copy, X, Minimize2 } from 'lucide-react';
+import { useLocation } from 'react-router-dom';
+import { useDarkModeState } from '@/hooks/useStoreSelectors';
+import useLyricsStore from '@/context/LyricsStore';
+import useTopMenuState from '@/hooks/WindowChrome/useTopMenuState';
+import useSubMenuListNav from '@/hooks/WindowChrome/useSubmenuListNav';
+import useMenuHandlers from '@/hooks/WindowChrome/useMenuHandlers';
+import { START_FIRST_RUN_TOUR_EVENT } from '@/utils/firstRunTour';
+
+const dragRegion = { WebkitAppRegion: 'drag' };
+const noDrag = { WebkitAppRegion: 'no-drag' };
+
+const TOP_MENU_ORDER = ['file', 'edit', 'view', 'output', 'tools', 'window', 'help'];
+
+const TOP_MENU_CONFIG = {
+  file: { count: 5, sub: [2, 3] },
+  edit: { count: 8, sub: [] },
+  view: { count: 7, sub: [] },
+  output: { count: 6, sub: [] },
+  tools: { count: 8, sub: [] },
+  window: { count: 3, sub: [] },
+  help: { count: 10, sub: [] },
+};
+
+const MenuItem = React.forwardRef(({ label, shortcut, onClick, disabled, active, ...rest }, ref) => (
+  <button
+    ref={ref}
+    type="button"
+    style={noDrag}
+    disabled={disabled}
+    onClick={onClick}
+    {...rest}
+    className={`w-full flex items-center justify-between px-3 py-1.5 text-[12px] rounded-md transition outline-none ${disabled
+      ? 'opacity-60 cursor-not-allowed'
+      : 'hover:bg-blue-500/10 focus:bg-blue-500/10'
+      } ${active
+        ? 'bg-blue-500/15 text-blue-700 dark:text-blue-100 ring-1 ring-blue-500/40'
+        : ''
+      }`}
+    aria-selected={active || undefined}
+  >
+    <span className="text-left">{label}</span>
+    {shortcut && <span className="text-[11px] text-gray-400">{shortcut}</span>}
+  </button>
+));
+MenuItem.displayName = 'MenuItem';
+
+const MenuSectionTitle = ({ children }) => (
+  <div className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-400">
+    {children}
+  </div>
+);
+
+const Separator = () => <div className="my-1 border-t border-gray-200/70 dark:border-slate-800" />;
+
+const TopMenuBar = () => {
+  const { darkMode } = useDarkModeState();
+  const location = useLocation();
+  const isNewSongCanvas = location.pathname === '/new-song';
+  const isLyricVideoStudio = location.pathname === '/lyric-video-studio';
+  const isControlPanelRoute = location.pathname === '/';
+  const controlPanelOnlyTitle = 'Only available in Control Panel';
+
+  const [recents, setRecents] = useState([]);
+  const [windowState, setWindowState] = useState({ isMaximized: false, isFullScreen: false, isFocused: true });
+  const [appVersion, setAppVersion] = useState('');
+  const [showFallbackIcon, setShowFallbackIcon] = useState(true);
+  const [isMac, setIsMac] = useState(false);
+
+  useEffect(() => {
+    const platform = window.electronAPI?.getPlatform?.();
+    setIsMac(platform === 'darwin');
+  }, []);
+
+  const barRef = useRef(null);
+  const keyHandlersRef = useRef({});
+  const recentsCloseTimerRef = useRef(null);
+  const importCloseTimerRef = useRef(null);
+
+  const topMenuOrder = TOP_MENU_ORDER;
+
+  const {
+    openMenu,
+    setOpenMenu,
+    openReason,
+    setOpenReason,
+    activeIndex,
+    setActiveIndex,
+    activeIndexRef,
+    menuContainerRefs,
+    menuRefs,
+    registerItemRef,
+    focusIndex,
+    openMenuAndFocus,
+    toggleMenu,
+    closeMenu,
+    scheduleCloseMenu,
+    clearCloseTimer,
+    createMenuKeyHandler,
+    ensureReason,
+    menuConfig,
+  } = useTopMenuState({
+    barRef,
+    topMenuOrder,
+    menuConfig: TOP_MENU_CONFIG,
+    keyHandlerLookup: (id) => {
+      const baseId = id?.includes(':') ? id.split(':')[0] : id;
+      return keyHandlersRef.current[id] || keyHandlersRef.current[baseId];
+    },
+  });
+
+  const {
+    submenuIndex: recentsIndex,
+    resetSubmenuRefs: resetRecentsRefs,
+    registerSubmenuItemRef: registerRecentItemRef,
+    openSubmenu: openRecentsSubmenu,
+    closeSubmenuToParent: closeRecentsSubmenu,
+    handleSubmenuKeyDown: handleRecentsKeyDown,
+  } = useSubMenuListNav({
+    submenuId: 'file:recent',
+    parentMenuId: 'file',
+    openMenu,
+    setOpenMenu,
+    topMenuOrder,
+    focusParentItem: () => focusIndex('file', 2),
+    setOpenReason: ensureReason,
+  });
+
+  const {
+    submenuIndex: importIndex,
+    resetSubmenuRefs: resetImportRefs,
+    registerSubmenuItemRef: registerImportItemRef,
+    openSubmenu: openImportSubmenu,
+    closeSubmenuToParent: closeImportSubmenu,
+    handleSubmenuKeyDown: handleImportKeyDown,
+  } = useSubMenuListNav({
+    submenuId: 'file:import',
+    parentMenuId: 'file',
+    openMenu,
+    setOpenMenu,
+    topMenuOrder,
+    focusParentItem: () => focusIndex('file', 3),
+    setOpenReason: ensureReason,
+  });
+
+  const menuHandlers = useMenuHandlers(closeMenu);
+
+  const menuBg = darkMode ? 'bg-slate-900/95 border-slate-800 text-slate-100' : 'bg-white border-slate-200 text-slate-900';
+  const menuPanelExtra = 'backdrop-blur-md';
+
+  const clearRecentsCloseTimer = useCallback(() => {
+    if (recentsCloseTimerRef.current) {
+      clearTimeout(recentsCloseTimerRef.current);
+      recentsCloseTimerRef.current = null;
+    }
+  }, []);
+
+  const closeRecentsAfterDelay = useCallback(() => {
+    clearRecentsCloseTimer();
+    recentsCloseTimerRef.current = setTimeout(closeRecentsSubmenu, 180);
+  }, [clearRecentsCloseTimer, closeRecentsSubmenu]);
+
+  const clearImportCloseTimer = useCallback(() => {
+    if (importCloseTimerRef.current) {
+      clearTimeout(importCloseTimerRef.current);
+      importCloseTimerRef.current = null;
+    }
+  }, []);
+
+  const closeImportAfterDelay = useCallback(() => {
+    clearImportCloseTimer();
+    importCloseTimerRef.current = setTimeout(closeImportSubmenu, 180);
+  }, [clearImportCloseTimer, closeImportSubmenu]);
+
+  useEffect(() => {
+    return () => {
+      clearCloseTimer();
+      clearRecentsCloseTimer();
+      clearImportCloseTimer();
+    };
+  }, [clearCloseTimer, clearRecentsCloseTimer, clearImportCloseTimer]);
+
+  useEffect(() => {
+    if (!openMenu) return;
+
+    const ref = menuContainerRefs.current[openMenu];
+    if (ref?.focus) {
+      setTimeout(() => {
+        try {
+          ref.focus();
+        } catch (error) {
+          console.warn('Failed to focus menu:', error);
+        }
+      }, 0);
+    }
+  }, [openMenu]);
+
+  useEffect(() => {
+    const loadRecents = async () => {
+      try {
+        const result = await window.electronAPI?.recents?.list?.();
+        if (result?.success) {
+          setRecents(result.recents || []);
+        }
+      } catch (error) {
+        console.warn('Failed to load recents:', error);
+      }
+    };
+
+    loadRecents();
+
+    const unsubscribe = window.electronAPI?.recents?.onChange?.((list) => {
+      setRecents(list || []);
+    });
+
+    return () => unsubscribe?.();
+  }, []);
+
+  // Refresh window state from the main process
+  const refreshWindowState = useCallback(() => {
+    window.electronAPI?.windowControls?.getState?.()
+      .then((res) => {
+        if (res?.success && res.state) {
+          setWindowState(res.state);
+        }
+      })
+      .catch(() => { });
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI?.onWindowState?.((state) => {
+      if (state) {
+        setWindowState((prev) => ({ ...prev, ...state }));
+      }
+    });
+
+    refreshWindowState();
+
+    return () => unsubscribe?.();
+  }, [refreshWindowState]);
+
+  // Listen for fullscreen toggle from F11 key (handled in useMenuShortcuts)
+  // and re-check state after a delay to catch async Windows fullscreen transitions
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'F11') {
+
+        setTimeout(refreshWindowState, 300);
+        setTimeout(refreshWindowState, 600);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [refreshWindowState]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    window.electronAPI?.getAppVersion?.()
+      .then((res) => {
+        if (isMounted && res?.success && res.version) {
+          setAppVersion(res.version);
+        }
+      })
+      .catch((error) => console.warn('Failed to get app version:', error));
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const handleClearRecents = async () => {
+    await menuHandlers.handleClearRecents();
+    setRecents([]);
+  };
+
+  const handleBarDoubleClick = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    menuHandlers.handleMinimize();
+  };
+
+  const handleMaximizeToggle = () => {
+    menuHandlers.handleMaximizeToggle(setWindowState);
+  };
+
+  const handleFullscreenToggle = useCallback(async () => {
+    closeMenu();
+    try {
+      const result = await window.electronAPI?.windowControls?.toggleFullscreen?.();
+      if (result?.success && typeof result.isFullScreen === 'boolean') {
+        setWindowState((prev) => ({ ...prev, isFullScreen: result.isFullScreen }));
+      }
+
+      setTimeout(refreshWindowState, 300);
+    } catch (error) {
+      console.warn('Failed to toggle fullscreen:', error);
+    }
+  }, [closeMenu, refreshWindowState]);
+
+  const handleAbout = () => {
+    menuHandlers.handleAbout(appVersion);
+  };
+
+  const handleTakeProductTour = useCallback(() => {
+    closeMenu();
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent(START_FIRST_RUN_TOUR_EVENT));
+    }, 0);
+  }, [closeMenu]);
+
+  const isMaxOrFull = windowState.isMaximized || windowState.isFullScreen;
+
+  const buildMenuHandler = useCallback((menuId) => {
+    const cfg = menuConfig?.[menuId];
+    if (!cfg) return null;
+
+    return createMenuKeyHandler({
+      menuId,
+      itemCount: cfg.count,
+      submenuIndexes: cfg.sub,
+      openSubmenu: menuId === 'file'
+        ? (index) => {
+          if (index === 2) {
+            openRecentsSubmenu(true, 'keyboard');
+          } else if (index === 3) {
+            openImportSubmenu(true, 'keyboard');
+          }
+        }
+        : undefined,
+    });
+  }, [createMenuKeyHandler, menuConfig, openImportSubmenu, openRecentsSubmenu]);
+
+  useEffect(() => {
+    keyHandlersRef.current = {
+      file: buildMenuHandler('file'),
+      edit: buildMenuHandler('edit'),
+      view: buildMenuHandler('view'),
+      output: buildMenuHandler('output'),
+      tools: buildMenuHandler('tools'),
+      window: buildMenuHandler('window'),
+      help: buildMenuHandler('help'),
+      'file:recent': (event) => {
+        ensureReason('keyboard');
+        return handleRecentsKeyDown(event);
+      },
+      'file:import': (event) => {
+        ensureReason('keyboard');
+        return handleImportKeyDown(event);
+      },
+    };
+  }, [buildMenuHandler, ensureReason, handleImportKeyDown, handleRecentsKeyDown]);
+
+  const getMenuKeyDown = useCallback((menuId) => {
+    const cfg = menuConfig?.[menuId];
+    return cfg ? buildMenuHandler(menuId) : undefined;
+  }, [buildMenuHandler, menuConfig]);
+
+  const isFullScreen = windowState.isFullScreen;
+
+  if (isFullScreen) {
+    return (
+      <div
+        ref={barRef}
+        className={`relative z-1500 h-9 flex items-center justify-center border-b text-[12px] ${darkMode ? 'bg-slate-900/90 border-slate-800 text-slate-100' : 'bg-slate-50/95 border-slate-200 text-slate-900'}`}
+        style={dragRegion}
+      >
+        <button
+          type="button"
+          onClick={handleFullscreenToggle}
+          style={noDrag}
+          className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium transition-all duration-150 border ${darkMode
+            ? 'bg-slate-800/80 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white hover:border-slate-600'
+            : 'bg-white/80 border-slate-300 text-slate-600 hover:bg-white hover:text-slate-900 hover:border-slate-400'
+            }`}
+          title="Exit Fullscreen (F11)"
+          aria-label="Exit Fullscreen"
+        >
+          <Minimize2 className="w-3 h-3" />
+          Exit Fullscreen
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={barRef}
+      className={`relative z-1500 h-9 flex items-center justify-between ${isMac ? 'pl-19.5' : 'pl-2.5'} pr-0 border-b text-[12px] ${darkMode ? 'bg-slate-900/90 border-slate-800 text-slate-100' : 'bg-slate-50/95 border-slate-200 text-slate-900'}`}
+      onDoubleClickCapture={handleBarDoubleClick}
+      style={dragRegion}
+    >
+      <div className="flex items-center gap-2 flex-1 min-w-0">
+        <div className="flex items-center gap-2 pr-2" style={noDrag}>
+          {showFallbackIcon && <div className="h-3.5 w-3.5 rounded-sm bg-linear-to-br from-blue-500 to-indigo-600" aria-hidden />}
+          <img
+            src="/LyricDisplay-icon.png"
+            alt="LyricDisplay"
+            className="h-3.5 w-3.5"
+            onLoad={() => setShowFallbackIcon(false)}
+            onError={() => setShowFallbackIcon(true)}
+          />
+        </div>
+
+        <div className="flex items-center gap-0.5" style={noDrag}>
+          <div
+            className="relative"
+            onMouseEnter={() => { clearCloseTimer(); if (openMenu) openMenuAndFocus('file', openReason || 'hover'); }}
+            onMouseLeave={() => { if (openMenu?.startsWith('file')) scheduleCloseMenu('file'); }}>
+            <button
+              type="button"
+              onClick={() => toggleMenu('file')}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md transition ${(openMenu && openMenu.startsWith('file')) ? (darkMode ? 'bg-slate-800' : 'bg-slate-200') : 'hover:bg-slate-200/50 dark:hover:bg-slate-800/80'
+                }`}
+              style={noDrag}
+            >
+              File
+            </button>
+            {openMenu && openMenu.startsWith('file') && (
+              <div
+                className={`absolute left-0 top-full mt-0 w-72 rounded-xl border shadow-xl z-50 p-1 ${menuBg} ${menuPanelExtra}`}
+                onKeyDown={getMenuKeyDown('file')}
+                role="menu"
+                tabIndex={0}
+                ref={(el) => { menuContainerRefs.current['file'] = el; }}
+                onMouseEnter={clearCloseTimer}
+                onMouseLeave={() => scheduleCloseMenu('file')}
+              >
+                <MenuItem ref={(el) => registerItemRef('file', 0, el)} label="New Lyrics" shortcut="Ctrl/Cmd + N" onClick={menuHandlers.handleNewLyrics} active={openMenu?.startsWith('file') && activeIndex === 0} />
+                <MenuItem ref={(el) => registerItemRef('file', 1, el)} label="Load Lyrics" shortcut="Ctrl/Cmd + O" onClick={menuHandlers.handleOpenLyrics} active={openMenu?.startsWith('file') && activeIndex === 1} />
+                <div
+                  className="relative"
+                  onMouseEnter={() => {
+                    clearRecentsCloseTimer();
+                    clearImportCloseTimer();
+                  }}
+                  onMouseLeave={closeRecentsAfterDelay}
+                >
+                  <MenuItem
+                    ref={(el) => registerItemRef('file', 2, el)}
+                    label="Open Recent"
+                    shortcut=">"
+                    onClick={() => { }}
+                    disabled={isLyricVideoStudio}
+                    active={openMenu?.startsWith('file') && activeIndex === 2}
+                    title={isLyricVideoStudio ? controlPanelOnlyTitle : undefined}
+                    onMouseEnter={() => {
+                      if (isLyricVideoStudio) return;
+                      clearCloseTimer();
+                      clearRecentsCloseTimer();
+                      clearImportCloseTimer();
+                      openRecentsSubmenu(false, 'hover');
+                    }}
+                    onMouseLeave={closeRecentsAfterDelay}
+                  />
+                  {openMenu === 'file:recent' && (
+                    <div
+                      className={`absolute left-full top-0 ml-1 w-72 rounded-xl border shadow-xl z-50 p-1 ${menuBg} ${menuPanelExtra}`}
+                      role="menu"
+                      tabIndex={0}
+                      ref={(el) => { menuContainerRefs.current['file:recent'] = el; }}
+                      onKeyDown={handleRecentsKeyDown}
+                      onMouseEnter={() => { clearCloseTimer(); clearRecentsCloseTimer(); clearImportCloseTimer(); openRecentsSubmenu(false, 'hover'); }}
+                      onMouseLeave={closeRecentsAfterDelay}
+                    >
+                      {resetRecentsRefs()}
+                      {recents && recents.length > 0 ? (
+                        recents.map((r, idx) => (
+                          <MenuItem
+                            key={r}
+                            ref={registerRecentItemRef(idx)}
+                            label={r.split(/[\\/]/).pop()}
+                            active={openMenu === 'file:recent' && recentsIndex === idx}
+                            onClick={() => menuHandlers.handleOpenRecent(r)}
+                          />
+                        ))
+                      ) : (
+                        <div className="px-3 py-2 text-xs text-gray-400">No recent files</div>
+                      )}
+                      <Separator />
+                      <MenuItem
+                        ref={registerRecentItemRef(recents.length)}
+                        label="Clear Recent Files"
+                        onClick={handleClearRecents}
+                        disabled={!recents || recents.length === 0}
+                        active={openMenu === 'file:recent' && recentsIndex === recents.length}
+                      />
+                    </div>
+                  )}
+                </div>
+                <Separator />
+                <div
+                  className="relative"
+                  onMouseEnter={() => {
+                    clearRecentsCloseTimer();
+                    clearImportCloseTimer();
+                  }}
+                  onMouseLeave={closeImportAfterDelay}
+                >
+                  <MenuItem
+                    ref={(el) => registerItemRef('file', 3, el)}
+                    label="Import Lyrics"
+                    shortcut=">"
+                    onClick={() => { }}
+                    disabled={!isControlPanelRoute}
+                    active={openMenu?.startsWith('file') && activeIndex === 3}
+                    title={!isControlPanelRoute ? controlPanelOnlyTitle : undefined}
+                    onMouseEnter={() => {
+                      if (!isControlPanelRoute) return;
+                      clearCloseTimer();
+                      clearRecentsCloseTimer();
+                      clearImportCloseTimer();
+                      openImportSubmenu(false, 'hover');
+                    }}
+                    onMouseLeave={closeImportAfterDelay}
+                  />
+                  {openMenu === 'file:import' && (
+                    <div
+                      className={`absolute left-full top-0 ml-1 w-72 rounded-xl border shadow-xl z-50 p-1 ${menuBg} ${menuPanelExtra}`}
+                      role="menu"
+                      tabIndex={0}
+                      ref={(el) => { menuContainerRefs.current['file:import'] = el; }}
+                      onKeyDown={handleImportKeyDown}
+                      onMouseEnter={() => {
+                        clearCloseTimer();
+                        clearRecentsCloseTimer();
+                        clearImportCloseTimer();
+                        openImportSubmenu(false, 'hover');
+                      }}
+                      onMouseLeave={closeImportAfterDelay}
+                    >
+                      {resetImportRefs()}
+                      <MenuItem
+                        ref={registerImportItemRef(0)}
+                        label="Search Online Lyrics"
+                        active={openMenu === 'file:import' && importIndex === 0}
+                        onClick={menuHandlers.handleOpenOnlineLyricsSearch}
+                      />
+                      <MenuItem
+                        ref={registerImportItemRef(1)}
+                        label="Import from EasyWorship"
+                        active={openMenu === 'file:import' && importIndex === 1}
+                        onClick={menuHandlers.handleEasyWorship}
+                      />
+                      <MenuItem
+                        ref={registerImportItemRef(2)}
+                        label="Import from PowerPoint"
+                        active={openMenu === 'file:import' && importIndex === 2}
+                        onClick={menuHandlers.handlePresentationImport}
+                      />
+                    </div>
+                  )}
+                </div>
+                <Separator />
+                <MenuItem ref={(el) => registerItemRef('file', 4, el)} label="Quit" shortcut="Alt + F4" onClick={menuHandlers.handleQuit} active={openMenu?.startsWith('file') && activeIndex === 4} />
+              </div>
+            )}
+          </div>
+
+          <div
+            className="relative"
+            onMouseEnter={() => { clearCloseTimer(); if (openMenu) openMenuAndFocus('edit', openReason || 'hover'); }}
+            onMouseLeave={() => { if (openMenu === 'edit') scheduleCloseMenu('edit'); }}>
+            <button
+              type="button"
+              onClick={() => toggleMenu('edit')}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md transition ${openMenu === 'edit' ? (darkMode ? 'bg-slate-800' : 'bg-slate-200') : 'hover:bg-slate-200/50 dark:hover:bg-slate-800/80'
+                }`}
+              style={noDrag}
+            >
+              Edit
+            </button>
+            {openMenu === 'edit' && (
+              <div className={`absolute left-0 top-full mt-0 w-64 rounded-xl border shadow-xl z-50 p-1 ${menuBg} ${menuPanelExtra}`}
+                role="menu"
+                onKeyDown={getMenuKeyDown('edit')}
+                tabIndex={0}
+                ref={(el) => { menuContainerRefs.current['edit'] = el; }}
+                onMouseEnter={clearCloseTimer}
+                onMouseLeave={() => scheduleCloseMenu('edit')}
+              >
+                <MenuItem ref={(el) => registerItemRef('edit', 0, el)} label="Undo" shortcut="Ctrl/Cmd + Z" onClick={menuHandlers.handleUndo} active={openMenu === 'edit' && activeIndex === 0} />
+                <MenuItem ref={(el) => registerItemRef('edit', 1, el)} label="Redo" shortcut="Ctrl/Cmd + Shift + Z" onClick={menuHandlers.handleRedo} active={openMenu === 'edit' && activeIndex === 1} />
+                <Separator />
+                <MenuItem ref={(el) => registerItemRef('edit', 2, el)} label="Cut" shortcut="Ctrl/Cmd + X" onClick={() => menuHandlers.handleClipboardAction('cut')} active={openMenu === 'edit' && activeIndex === 2} />
+                <MenuItem ref={(el) => registerItemRef('edit', 3, el)} label="Copy" shortcut="Ctrl/Cmd + C" onClick={() => menuHandlers.handleClipboardAction('copy')} active={openMenu === 'edit' && activeIndex === 3} />
+                <MenuItem ref={(el) => registerItemRef('edit', 4, el)} label="Paste" shortcut="Ctrl/Cmd + V" onClick={() => menuHandlers.handleClipboardAction('paste')} active={openMenu === 'edit' && activeIndex === 4} />
+                <MenuItem ref={(el) => registerItemRef('edit', 5, el)} label="Delete" shortcut="Del" onClick={() => menuHandlers.handleClipboardAction('delete')} active={openMenu === 'edit' && activeIndex === 5} />
+                <MenuItem ref={(el) => registerItemRef('edit', 6, el)} label="Select All" shortcut="Ctrl/Cmd + A" onClick={() => menuHandlers.handleClipboardAction('selectAll')} active={openMenu === 'edit' && activeIndex === 6} />
+                <Separator />
+                <MenuItem ref={(el) => registerItemRef('edit', 7, el)} label="Preferences" shortcut="Ctrl/Cmd + I" onClick={menuHandlers.handlePreferences} active={openMenu === 'edit' && activeIndex === 7} />
+              </div>
+            )}
+          </div>
+
+          <div
+            className="relative"
+            onMouseEnter={() => { clearCloseTimer(); if (openMenu) openMenuAndFocus('view', openReason || 'hover'); }}
+            onMouseLeave={() => { if (openMenu === 'view') scheduleCloseMenu('view'); }}>
+            <button
+              type="button"
+              onClick={() => toggleMenu('view')}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md transition ${openMenu === 'view' ? (darkMode ? 'bg-slate-800' : 'bg-slate-200') : 'hover:bg-slate-200/50 dark:hover:bg-slate-800/80'
+                }`}
+              style={noDrag}
+            >
+              View
+            </button>
+            {openMenu === 'view' && (
+              <div className={`absolute left-0 top-full mt-0 w-80 rounded-xl border shadow-xl z-50 p-1 ${menuBg} ${menuPanelExtra}`}
+                role="menu"
+                tabIndex={0}
+                ref={(el) => { menuContainerRefs.current['view'] = el; }}
+                onMouseEnter={clearCloseTimer}
+                onMouseLeave={() => scheduleCloseMenu('view')}
+                onKeyDown={getMenuKeyDown('view')}
+              >
+                <MenuItem
+                  ref={(el) => registerItemRef('view', 0, el)}
+                  label={
+                    useLyricsStore.getState().themeMode === 'system'
+                      ? `App theme is system managed`
+                      : darkMode ? 'Light Mode' : 'Dark Mode'
+                  }
+                  onClick={menuHandlers.handleToggleDarkMode}
+                  disabled={useLyricsStore.getState().themeMode === 'system'}
+                  active={openMenu === 'view' && activeIndex === 0}
+                  title={useLyricsStore.getState().themeMode === 'system' ? 'Theme is managed by system preferences. Change in Preferences -> Appearance.' : undefined}
+                />
+                <MenuItem ref={(el) => registerItemRef('view', 1, el)} label="Reload" shortcut="Ctrl/Cmd + R" onClick={menuHandlers.handleReload} active={openMenu === 'view' && activeIndex === 1} />
+                <MenuItem ref={(el) => registerItemRef('view', 2, el)} label="Toggle Developer Tools" shortcut="Ctrl/Cmd + Shift + I" onClick={menuHandlers.handleToggleDevTools} active={openMenu === 'view' && activeIndex === 2} />
+                <Separator />
+                <MenuItem ref={(el) => registerItemRef('view', 3, el)} label="Zoom In" shortcut="Ctrl/Cmd +" onClick={() => menuHandlers.handleZoom('in')} active={openMenu === 'view' && activeIndex === 3} />
+                <MenuItem ref={(el) => registerItemRef('view', 4, el)} label="Zoom Out" shortcut="Ctrl/Cmd -" onClick={() => menuHandlers.handleZoom('out')} active={openMenu === 'view' && activeIndex === 4} />
+                <MenuItem ref={(el) => registerItemRef('view', 5, el)} label="Reset Zoom" shortcut="Ctrl/Cmd 0" onClick={() => menuHandlers.handleZoom('reset')} active={openMenu === 'view' && activeIndex === 5} />
+                <Separator />
+                <MenuItem ref={(el) => registerItemRef('view', 6, el)} label="Toggle Fullscreen" shortcut="F11" onClick={handleFullscreenToggle} active={openMenu === 'view' && activeIndex === 6} />
+              </div>
+            )}
+          </div>
+
+          <div
+            className="relative"
+            onMouseEnter={() => { clearCloseTimer(); if (openMenu) openMenuAndFocus('output', openReason || 'hover'); }}
+            onMouseLeave={() => { if (openMenu === 'output') scheduleCloseMenu('output'); }}>
+            <button
+              type="button"
+              onClick={() => toggleMenu('output')}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md transition ${openMenu === 'output' ? (darkMode ? 'bg-slate-800' : 'bg-slate-200') : 'hover:bg-slate-200/50 dark:hover:bg-slate-800/80'
+                }`}
+              style={noDrag}
+            >
+              Output
+            </button>
+            {openMenu === 'output' && (
+              <div className={`absolute left-0 top-full mt-0 w-72 rounded-xl border shadow-xl z-50 p-1 ${menuBg} ${menuPanelExtra}`}
+                role="menu"
+                tabIndex={0}
+                ref={(el) => { menuContainerRefs.current['output'] = el; }}
+                onMouseEnter={clearCloseTimer}
+                onMouseLeave={() => scheduleCloseMenu('output')}
+                onKeyDown={getMenuKeyDown('output')}
+              >
+                <MenuItem ref={(el) => registerItemRef('output', 0, el)} label="Project to Display" onClick={menuHandlers.handleDisplaySettings} disabled={!isControlPanelRoute} active={openMenu === 'output' && activeIndex === 0} title={!isControlPanelRoute ? controlPanelOnlyTitle : undefined} />
+                <MenuItem ref={(el) => registerItemRef('output', 1, el)} label="Preview Outputs" onClick={menuHandlers.handlePreviewOutputs} disabled={!isControlPanelRoute} active={openMenu === 'output' && activeIndex === 1} title={!isControlPanelRoute ? controlPanelOnlyTitle : undefined} />
+                <MenuItem ref={(el) => registerItemRef('output', 2, el)} label="Sync Outputs" onClick={menuHandlers.handleSyncOutputs} disabled={!isControlPanelRoute} active={openMenu === 'output' && activeIndex === 2} title={!isControlPanelRoute ? controlPanelOnlyTitle : undefined} />
+                <Separator />
+                <MenuItem ref={(el) => registerItemRef('output', 3, el)} label="OBS Source Creator" onClick={menuHandlers.handleOpenObsSourceCreator} disabled={!isControlPanelRoute} active={openMenu === 'output' && activeIndex === 3} title={!isControlPanelRoute ? controlPanelOnlyTitle : undefined} />
+                <MenuItem ref={(el) => registerItemRef('output', 4, el)} label="NDI Preferences" onClick={menuHandlers.handleNdiPreferences} active={openMenu === 'output' && activeIndex === 4} />
+                <MenuItem ref={(el) => registerItemRef('output', 5, el)} label="User Media Library" onClick={menuHandlers.handleUserMedia} disabled={!isControlPanelRoute} active={openMenu === 'output' && activeIndex === 5} title={!isControlPanelRoute ? controlPanelOnlyTitle : undefined} />
+              </div>
+            )}
+          </div>
+
+          <div
+            className="relative"
+            onMouseEnter={() => { clearCloseTimer(); if (openMenu) openMenuAndFocus('tools', openReason || 'hover'); }}
+            onMouseLeave={() => { if (openMenu === 'tools') scheduleCloseMenu('tools'); }}>
+            <button
+              type="button"
+              onClick={() => toggleMenu('tools')}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md transition ${openMenu === 'tools' ? (darkMode ? 'bg-slate-800' : 'bg-slate-200') : 'hover:bg-slate-200/50 dark:hover:bg-slate-800/80'
+                }`}
+              style={noDrag}
+            >
+              Tools
+            </button>
+            {openMenu === 'tools' && (
+              <div className={`absolute left-0 top-full mt-0 w-72 rounded-xl border shadow-xl z-50 p-1 ${menuBg} ${menuPanelExtra}`}
+                role="menu"
+                tabIndex={0}
+                ref={(el) => { menuContainerRefs.current['tools'] = el; }}
+                onMouseEnter={clearCloseTimer}
+                onMouseLeave={() => scheduleCloseMenu('tools')}
+                onKeyDown={getMenuKeyDown('tools')}
+              >
+                <MenuItem ref={(el) => registerItemRef('tools', 0, el)} label="Setlist Manager" shortcut="Ctrl/Cmd + Shift + S" onClick={menuHandlers.handleOpenSetlist} disabled={!isControlPanelRoute} active={openMenu === 'tools' && activeIndex === 0} title={!isControlPanelRoute ? controlPanelOnlyTitle : undefined} />
+                <MenuItem ref={(el) => registerItemRef('tools', 1, el)} label="Timer Control" onClick={menuHandlers.handleOpenTimerControl} active={openMenu === 'tools' && activeIndex === 1} />
+                <MenuItem ref={(el) => registerItemRef('tools', 2, el)} label="Connect Mobile Controller" onClick={menuHandlers.handleConnectMobile} disabled={!isControlPanelRoute} active={openMenu === 'tools' && activeIndex === 2} title={!isControlPanelRoute ? controlPanelOnlyTitle : undefined} />
+                <MenuItem ref={(el) => registerItemRef('tools', 3, el)} label="LyricDisplay Dock Setup" onClick={menuHandlers.handleObsDockSetup} active={openMenu === 'tools' && activeIndex === 3} />
+                <MenuItem ref={(el) => registerItemRef('tools', 4, el)} label="Lyric Video Studio" onClick={menuHandlers.handleOpenLyricVideoStudio} active={openMenu === 'tools' && activeIndex === 4} />
+                <Separator />
+                <MenuItem ref={(el) => registerItemRef('tools', 5, el)} label="Connection Diagnostics" onClick={menuHandlers.handleConnectionDiagnostics} active={openMenu === 'tools' && activeIndex === 5} />
+                <MenuItem ref={(el) => registerItemRef('tools', 6, el)} label="Production Readiness" onClick={menuHandlers.handlePreServiceHealth} active={openMenu === 'tools' && activeIndex === 6} />
+                <MenuItem ref={(el) => registerItemRef('tools', 7, el)} label="Operator Action Log" onClick={menuHandlers.handleOperatorActionLog} active={openMenu === 'tools' && activeIndex === 7} />
+              </div>
+            )}
+          </div>
+
+          <div
+            className="relative"
+            onMouseEnter={() => { clearCloseTimer(); if (openMenu) openMenuAndFocus('window', openReason || 'hover'); }}
+            onMouseLeave={() => { if (openMenu === 'window') scheduleCloseMenu('window'); }}>
+            <button
+              type="button"
+              onClick={() => toggleMenu('window')}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md transition ${openMenu === 'window' ? (darkMode ? 'bg-slate-800' : 'bg-slate-200') : 'hover:bg-slate-200/50 dark:hover:bg-slate-800/80'
+                }`}
+              style={noDrag}
+            >
+              Window
+            </button>
+            {openMenu === 'window' && (
+              <div className={`absolute left-0 top-full mt-0 w-64 rounded-xl border shadow-xl z-50 p-1 ${menuBg} ${menuPanelExtra}`}
+                role="menu"
+                tabIndex={0}
+                ref={(el) => { menuContainerRefs.current['window'] = el; }}
+                onMouseEnter={clearCloseTimer}
+                onMouseLeave={() => scheduleCloseMenu('window')}
+                onKeyDown={getMenuKeyDown('window')}
+              >
+                <MenuItem ref={(el) => registerItemRef('window', 0, el)} label="Minimize" onClick={menuHandlers.handleMinimize} active={openMenu === 'window' && activeIndex === 0} />
+                <MenuItem ref={(el) => registerItemRef('window', 1, el)} label={isMaxOrFull ? 'Restore' : 'Maximize'} onClick={handleMaximizeToggle} active={openMenu === 'window' && activeIndex === 1} />
+                <MenuItem ref={(el) => registerItemRef('window', 2, el)} label="Close" onClick={menuHandlers.handleQuit} active={openMenu === 'window' && activeIndex === 2} />
+              </div>
+            )}
+          </div>
+
+          <div
+            className="relative"
+            onMouseEnter={() => { clearCloseTimer(); if (openMenu) openMenuAndFocus('help', openReason || 'hover'); }}
+            onMouseLeave={() => { if (openMenu === 'help') scheduleCloseMenu('help'); }}>
+            <button
+              type="button"
+              onClick={() => toggleMenu('help')}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md transition ${openMenu === 'help' ? (darkMode ? 'bg-slate-800' : 'bg-slate-200') : 'hover:bg-slate-200/50 dark:hover:bg-slate-800/80'
+                }`}
+              style={noDrag}
+            >
+              Help
+            </button>
+            {openMenu === 'help' && (
+              <div className={`absolute left-0 top-full mt-0 w-72 rounded-xl border shadow-xl z-50 p-1 ${menuBg} ${menuPanelExtra}`}
+                role="menu"
+                tabIndex={0}
+                ref={(el) => { menuContainerRefs.current['help'] = el; }}
+                onMouseEnter={clearCloseTimer}
+                onMouseLeave={() => scheduleCloseMenu('help')}
+                onKeyDown={getMenuKeyDown('help')}
+              >
+                <MenuItem ref={(el) => registerItemRef('help', 0, el)} label="Documentation" onClick={menuHandlers.handleDocs} active={openMenu === 'help' && activeIndex === 0} />
+                <MenuItem ref={(el) => registerItemRef('help', 1, el)} label="Integration Guide" onClick={menuHandlers.handleIntegrationGuide} active={openMenu === 'help' && activeIndex === 1} />
+                <MenuItem ref={(el) => registerItemRef('help', 2, el)} label="Keyboard Shortcuts" onClick={menuHandlers.handleShortcuts} active={openMenu === 'help' && activeIndex === 2} />
+                <MenuItem ref={(el) => registerItemRef('help', 3, el)} label="Take the Product Tour" onClick={handleTakeProductTour} disabled={!isControlPanelRoute} active={openMenu === 'help' && activeIndex === 3} title={!isControlPanelRoute ? controlPanelOnlyTitle : undefined} />
+                <MenuItem ref={(el) => registerItemRef('help', 4, el)} label="GitHub Repository" onClick={menuHandlers.handleRepo} active={openMenu === 'help' && activeIndex === 4} />
+                <Separator />
+                <MenuItem ref={(el) => registerItemRef('help', 5, el)} label="Notifications" onClick={menuHandlers.handleCheckAnnouncements} active={openMenu === 'help' && activeIndex === 5} />
+                <MenuItem ref={(el) => registerItemRef('help', 6, el)} label="More About Author" onClick={() => window.open('https://peteralakembi.design', '_blank', 'noopener,noreferrer')} active={openMenu === 'help' && activeIndex === 6} />
+                <MenuItem ref={(el) => registerItemRef('help', 7, el)} label="About LyricDisplay" onClick={handleAbout} active={openMenu === 'help' && activeIndex === 7} />
+                <MenuItem ref={(el) => registerItemRef('help', 8, el)} label="Support Development" onClick={menuHandlers.handleSupportDev} active={openMenu === 'help' && activeIndex === 8} />
+                <MenuItem ref={(el) => registerItemRef('help', 9, el)} label="Check for Updates" onClick={menuHandlers.handleCheckUpdates} active={openMenu === 'help' && activeIndex === 9} />
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {!isMac && (
+        <div className="flex items-stretch ml-auto" style={noDrag}>
+          <button
+            type="button"
+            onClick={menuHandlers.handleMinimize}
+            title="Minimize window"
+            className={`h-9 w-12 flex items-center justify-center transition ${darkMode ? 'hover:bg-slate-800' : 'hover:bg-slate-200'} ${!windowState.isFocused ? 'opacity-50' : ''}`}
+            aria-label="Minimize window"
+          >
+            <Minus className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={handleMaximizeToggle}
+            title={windowState.isMaximized ? 'Restore window' : 'Maximize window'}
+            className={`h-9 w-12 flex items-center justify-center transition ${darkMode ? 'hover:bg-slate-800' : 'hover:bg-slate-200'} ${!windowState.isFocused ? 'opacity-50' : ''}`}
+            aria-label={windowState.isMaximized ? 'Restore window' : 'Maximize window'}
+          >
+            {isMaxOrFull ? <Copy className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
+          </button>
+          <button
+            type="button"
+            onClick={menuHandlers.handleQuit}
+            title="Close window"
+            className={`h-9 w-12 flex items-center justify-center transition ${darkMode ? 'hover:bg-red-600 hover:text-white' : 'hover:bg-red-600 hover:text-white'
+              } ${!windowState.isFocused ? 'opacity-50' : ''}`}
+            aria-label="Close window"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default TopMenuBar;

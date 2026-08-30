@@ -1,0 +1,56 @@
+# LyricDisplay Contribution Guide
+
+Thank you for helping build LyricDisplay. This guide captures the conventions the codebase already follows and how to work productively across the Electron shell, Express/socket backend, and React control/output UIs.
+
+**IMPORTANT NOTE:** A significant portion of this project was developed with the assistance of AI coding tools and large language models. Contributions that refactor, improve maintainability, and align the codebase with established best practices and development standards are highly encouraged and welcome.
+
+All contributors and community participants are expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Getting Started
+- Use Node 22 and npm, matching CI. Install both dependency sets with `npm install` and `npm --prefix server install`.
+- **NDI Broadcasting (optional):** The NDI companion is a separate repo. To work on NDI features locally, clone it into the project root: `git clone https://github.com/PeterAlaks/lyricdisplay-ndi.git` then `cd lyricdisplay-ndi && npm install`. The app detects it automatically in dev mode. Without it, the NDI feature simply shows "Not Installed" — everything else works normally.
+- Development: `npm run electron-dev` (spins up Vite + Electron + backend). Frontend only: `npm run dev`. Backend only: `npm run server`.
+- Production build: `npm run build` (Vite) and `npm run electron-pack` for installers.
+- Do not commit generated artifacts from `dist/`, `release/`, `out/`, or `uploads/`. The tracked files in `build/` are electron-builder/installer inputs, so change them only when packaging behavior changes.
+
+## Architecture Snapshot
+
+For process boundaries, file ownership, runtime flows, the route map, and a feature-to-file index, use the [repository and architecture map](docs/PROJECT_STRUCTURE.md).
+
+- **Frontend (`src/`)**: React 19 + Vite + Tailwind. Zustand (`context/LyricsStore.js`) persists control state (lyrics, selections, styling). Routing uses clean browser paths. Reusable UI lives in `components/ui`, modals/toasts are provided via `ModalProvider` and `ToastProvider`.
+- **Output views (`pages/OutputPage.jsx`, `pages/Stage.jsx`)**: Socket-driven displays that render a single current line with styling/autosizing/background media, using framer-motion for transitions.
+- **Control panel (`components/LyricDisplayApp.jsx`)**: Desktop-first controller with setlists, online lyrics search, autoplay (interval and timestamp-driven), intelligent search, and styling panels for each output.
+- **Backend (`server/`)**: Express + Socket.IO with JWT auth, join-code guard for controllers, media upload endpoints (200 MB max, limited MIME types), and secret rotation support. Socket events live in `server/events.js` and enforce permissions.
+- **Electron main process (`main/`)**: Window creation, IPC bridges, updater, display assignments, EasyWorship import, secure token storage, and menu integration. Shared parsing lives in `shared/`.
+
+## Code Style and Patterns
+- Use modern ESM, functional React components, and hooks. Keep JSX readable and prefer small composable pieces.
+- Styling: Tailwind utility classes and the small UI kit in `components/ui`. Reuse shared components (e.g., `Switch`, `Tabs`, tooltip) instead of ad-hoc DOM.
+- State: Pull selectors from `hooks/useStoreSelectors` to avoid redundant subscription logic. Keep persistence-friendly shapes (avoid storing transient DOM data).
+- Sockets: Use `useSocket` / `useControlSocket` emitters. Never bypass permission checks on the server—mirror existing event names/payload shapes in `server/realtime/handlers/` and `docs/asyncapi.yaml`.
+- Parsing: Import from the owning module in `shared/lyricsParsing/` (such as `txtParser.js`, `lrcParser.js`, or `lineSplitting.js`) and use `shared/documentTextExtraction.js`/`shared/lyricImportRegistry.js` for document imports to keep desktop, backend, and renderer in sync.
+- File I/O and dialogs: Go through the domain handlers in `main/ipc/` and the preload bridge; avoid accessing Node APIs directly from the renderer.
+- Logging: Use `utils/logger.js` helpers. Avoid logging tokens, admin keys, or raw JWTs.
+
+## Feature-Specific Guidelines
+- **Setlists**: The default is 50 items and the shared hard maximum is 100; preserve the shared limits and validation unless you also update server guardrails, preferences, tests, and UX. Keep metadata (`fileType`, `addedBy`, `sections`) intact when emitting events.
+- **Outputs**: When changing styling logic, update both control panel writers and output readers. `maxLines` autosizing is calculated client-side and mirrored to the control panel via `emitOutputMetrics`.
+- **Background media**: Uploads go to `/api/media/backgrounds` with strict MIME/size filters; cleanup code prunes old files per output. Respect these constraints if adjusting limits.
+- **Authentication**: Desktop tokens require admin key in production; controller tokens require the 6-digit join code plus rate limiting. Maintain these flows when altering auth.
+- **Shortcuts and menus**: Keyboard/menu integrations live in `hooks/LyricDisplayApp/useMenuShortcuts.js` and Electron menu templates. Add new actions in both places.
+
+## Testing and Verification
+- Quick smoke before PRs: load a `.txt` and `.lrc`, verify translation grouping, toggle outputs on/off, open output windows (Output1/Output2 plus any custom outputs in use), and ensure lines sync across outputs and stage.
+- Check setlist flows: add/remove/reorder up to 50 items, load from `.ldset`, and confirm server reflects changes (watch Socket.IO logs).
+- Autoplay: test interval-based and timestamp-based modes, including stopping/starting while connected clients remain synced.
+- Backgrounds: upload an image and a short video, confirm rendering on outputs and cleanup of older assets.
+- Run `npm run build` to catch Vite/Electron build breaks; for backend changes, start `npm run server` and hit `/api/health`.
+
+## Pull Request Expectations
+- Keep changes focused; include rationale and screenshots/GIFs for UI-affecting work.
+- Update docs/tooltips/modals when altering user-facing flows (e.g., shortcuts, output settings).
+- Maintain accessibility: meaningful button labels, avoid text-only indicators for critical state (output toggles, auth indicators).
+- Consider cross-platform impacts (Windows/macOS/Linux) for filesystem paths, display handling, and packaging.
+
+## Decision Log (lightweight)
+- When introducing a new protocol, event, or settings shape, document it briefly in the PR description and update relevant helpers (`useSocketEvents`, `server/events.js`, the owning `shared/lyricsParsing/` module) to keep surfaces aligned.

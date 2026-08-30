@@ -1,0 +1,576 @@
+import { app } from 'electron';
+import { execSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import util from 'util';
+import { randomUUID } from 'crypto';
+import { getUserDataMigrationResult } from './appIdentity.js';
+import { BatchedLogWriter, formatStructuredLogRecord } from './batchedLogWriter.js';
+import { clearLogDirectoryContents } from './logCleanup.js';
+import {
+  LOG_RETENTION,
+  MANAGED_LOG_FILE_PATTERN,
+  buildLogPrunePlan,
+  getLogSessionPath,
+} from './logRetention.js';
+
+const RESOURCE_LOG_INTERVAL_MS = 60_000;
+const MAX_FORMATTED_LOG_CHARS = 48 * 1024;
+
+let initialized = false;
+let logDir = null;
+let logFilePath = null;
+let latestLogFilePath = null;
+let fileLoggingReady = false;
+let currentLogBytes = 0;
+let originals = null;
+let resourceDiagnosticsTimer = null;
+let resourceDiagnosticsPending = false;
+let batchedWriter = null;
+let logContext = null;
+let clearingLogs = false;
+
+const timestamp = () => new Date().toISOString();
+
+const safeInspect = (value) => {
+  if (typeof value === 'string') {
+    return value.length > MAX_FORMATTED_LOG_CHARS
+      ? `${value.slice(0, MAX_FORMATTED_LOG_CHARS)}… [truncated]`
+      : value;
+  }
+  return util.inspect(value, {
+    depth: 5,
+    breakLength: 140,
+    maxArrayLength: 80,
+    maxStringLength: MAX_FORMATTED_LOG_CHARS,
+  });
+};
+
+const formatArgs = (args) => {
+  let formatted = '';
+  for (const arg of args) {
+    const inspected = safeInspect(arg);
+    const separator = formatted ? ' ' : '';
+    const remaining = MAX_FORMATTED_LOG_CHARS - formatted.length - separator.length;
+    if (remaining <= 0) break;
+    formatted += `${separator}${inspected.slice(0, remaining)}`;
+  }
+  return formatted;
+};
+
+const createSessionLogFileName = () => {
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[:.]/g, '-')
+    .replace('T', '_')
+    .replace('Z', '');
+  return `lyricdisplay-${stamp}-pid${process.pid}.log`;
+};
+
+const resolveLogDir = () => {
+  try {
+    app.setAppLogsPath();
+    const electronLogDir = app.getPath('logs');
+    if (electronLogDir) return electronLogDir;
+  } catch {
+  }
+
+  try {
+    return path.join(app.getPath('userData'), 'logs');
+  } catch {
+    return path.join(process.cwd(), 'logs');
+  }
+};
+
+const readJsonFile = (filePath) => {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return null;
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+};
+
+const runGit = (command) => {
+  if (app.isPackaged) return null;
+  try {
+    return execSync(command, {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+};
+
+const getRuntimeBuildInfo = () => {
+  const appPath = (() => {
+    try {
+      return app.getAppPath?.();
+    } catch {
+      return null;
+    }
+  })();
+
+  const candidates = [
+    appPath ? path.join(appPath, 'dist', 'build-info.json') : null,
+    path.join(process.cwd(), 'dist', 'build-info.json'),
+  ];
+  const fromFile = candidates.map(readJsonFile).find(Boolean);
+  if (fromFile) return fromFile;
+
+  const status = runGit('git status --short');
+  return {
+    version: app.getVersion?.(),
+    builtAt: null,
+    commit: runGit('git rev-parse HEAD'),
+    shortCommit: runGit('git rev-parse --short=12 HEAD'),
+    branch: runGit('git branch --show-current'),
+    tag: runGit('git describe --tags --exact-match HEAD'),
+    dirty: Boolean(status),
+    dirtySummary: status || '',
+    source: app.isPackaged ? 'packaged-no-build-info' : 'local-git-fallback',
+  };
+};
+
+const warnLoggingFailure = (...args) => {
+  try {
+    originals?.warn?.(...args);
+  } catch {
+  }
+};
+
+const getFileSize = (filePath) => {
+  try {
+    const stat = fs.statSync(filePath);
+    return stat.isFile() ? stat.size : 0;
+  } catch {
+    return 0;
+  }
+};
+
+const rotateLogs = (filePath, { force = false } = {}) => {
+  try {
+    if (!fs.existsSync(filePath)) return false;
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || (!force && stat.size < LOG_RETENTION.maxLogBytes)) return false;
+
+    for (let index = LOG_RETENTION.maxRotatedLogs; index >= 1; index -= 1) {
+      const source = `${filePath}.${index}`;
+      const target = `${filePath}.${index + 1}`;
+      if (index === LOG_RETENTION.maxRotatedLogs && fs.existsSync(source)) {
+        fs.rmSync(source, { force: true });
+        continue;
+      }
+      if (fs.existsSync(source)) {
+        fs.renameSync(source, target);
+      }
+    }
+
+    fs.renameSync(filePath, `${filePath}.1`);
+    return true;
+  } catch (error) {
+    warnLoggingFailure('[Logging] Failed to rotate log file:', error);
+    return false;
+  }
+};
+
+const listManagedLogFiles = () => {
+  try {
+    return fs.readdirSync(logDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && MANAGED_LOG_FILE_PATTERN.test(entry.name))
+      .map((entry) => {
+        const filePath = path.join(logDir, entry.name);
+        const stat = fs.statSync(filePath);
+        return {
+          filePath,
+          sessionPath: getLogSessionPath(filePath),
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+        };
+      });
+  } catch (error) {
+    warnLoggingFailure('[Logging] Failed to list log files for cleanup:', error);
+    return [];
+  }
+};
+
+const pruneLogFolder = ({ preservePaths = [] } = {}) => {
+  const deleteLogFile = (filePath) => {
+    try {
+      fs.rmSync(filePath, { force: true });
+      return true;
+    } catch (error) {
+      warnLoggingFailure('[Logging] Failed to delete old log file:', filePath, error);
+      return false;
+    }
+  };
+
+  const plan = buildLogPrunePlan(listManagedLogFiles(), { preservePaths });
+  plan.deletePaths.forEach(deleteLogFile);
+  return plan.stats;
+};
+
+const appendBatchToLogFile = async (text) => {
+  if (!fileLoggingReady || !logFilePath) return;
+  const byteLength = Buffer.byteLength(text, 'utf8');
+  if (currentLogBytes > 0 && currentLogBytes + byteLength > LOG_RETENTION.maxLogBytes) {
+    if (rotateLogs(logFilePath, { force: true })) {
+      currentLogBytes = 0;
+    } else {
+      currentLogBytes = getFileSize(logFilePath);
+    }
+  }
+
+  try {
+    await fs.promises.appendFile(logFilePath, text, 'utf8');
+    currentLogBytes += byteLength;
+  } catch (error) {
+    fileLoggingReady = false;
+    throw error;
+  }
+};
+
+const formatRecord = (level, message, context = {}) => formatStructuredLogRecord({
+  timestamp: timestamp(),
+  level,
+  message,
+  context: { ...logContext, ...context },
+});
+
+const writeLine = (level, message, context = {}) => {
+  if (!fileLoggingReady || !batchedWriter) return;
+  const normalized = String(message || '').replace(/\r?\n/g, '\n');
+  const lines = normalized.split('\n');
+  const critical = level === 'FATAL' || level === 'ERROR' || level === 'BACKEND_ERROR';
+  for (const line of lines) {
+    if (line.length === 0) continue;
+    batchedWriter.enqueue(formatRecord(level, line, context), { critical });
+  }
+};
+
+export const writeLog = (level, ...args) => {
+  writeLine(level, formatArgs(args));
+};
+
+export const writeRawLog = (level, text, context = {}) => {
+  writeLine(level, text, context);
+};
+
+export const getLogPaths = () => ({
+  logDir,
+  logFilePath,
+  latestLogFilePath,
+});
+
+function logUserDataMigrationStatus() {
+  const status = getUserDataMigrationResult();
+  if (!status) return;
+
+  if (status.skippedReason) {
+    writeLog('INFO', 'User data migration skipped', {
+      profile: status.profile,
+      targetPath: status.targetPath,
+      reason: status.skippedReason,
+    });
+    return;
+  }
+
+  const conflicts = [
+    ...(Array.isArray(status.conflicts) ? status.conflicts : []),
+    ...(Array.isArray(status.legacyNdi?.conflicts) ? status.legacyNdi.conflicts : []),
+    ...(Array.isArray(status.legacyUserDataNdi?.conflicts) ? status.legacyUserDataNdi.conflicts : []),
+    ...(Array.isArray(status.flatNdiInstall?.conflicts) ? status.flatNdiInstall.conflicts : []),
+    ...(Array.isArray(status.legacyEasyWorshipSongs?.conflicts) ? status.legacyEasyWorshipSongs.conflicts : []),
+    ...(Array.isArray(status.legacyEasyWorshipLyrics?.conflicts) ? status.legacyEasyWorshipLyrics.conflicts : []),
+    ...(Array.isArray(status.legacyPresentationLyrics?.conflicts) ? status.legacyPresentationLyrics.conflicts : []),
+  ];
+  const errors = [
+    ...(Array.isArray(status.errors) ? status.errors : []),
+    ...(Array.isArray(status.legacyNdi?.errors) ? status.legacyNdi.errors : []),
+    ...(Array.isArray(status.legacyUserDataNdi?.errors) ? status.legacyUserDataNdi.errors : []),
+    ...(Array.isArray(status.flatNdiInstall?.errors) ? status.flatNdiInstall.errors : []),
+    ...(Array.isArray(status.legacyEasyWorshipSongs?.errors) ? status.legacyEasyWorshipSongs.errors : []),
+    ...(Array.isArray(status.legacyEasyWorshipLyrics?.errors) ? status.legacyEasyWorshipLyrics.errors : []),
+    ...(Array.isArray(status.legacyPresentationLyrics?.errors) ? status.legacyPresentationLyrics.errors : []),
+  ];
+  const didMigrationWork = Boolean(
+    status.attempted ||
+    status.reconciliationAttempted ||
+    status.legacyNdi?.attempted ||
+    status.legacyUserDataNdi?.attempted ||
+    status.flatNdiInstall?.attempted ||
+    status.legacyEasyWorshipSongs?.attempted ||
+    status.legacyEasyWorshipLyrics?.attempted ||
+    status.legacyPresentationLyrics?.attempted ||
+    conflicts.length ||
+    errors.length
+  );
+
+  if (didMigrationWork) {
+    writeLog('INFO', 'User data migration run status', status);
+    return;
+  }
+
+  writeLog('INFO', 'User data migration already complete', {
+    migratedAt: status.migratedAt,
+    sourcePath: status.sourcePath,
+    targetPath: status.targetPath,
+    deletedLegacy: status.deletedLegacy,
+    legacyNdiDeleted: status.legacyNdi?.deletedLegacy,
+    legacyUserDataNdiDeleted: status.legacyUserDataNdi?.deletedLegacy,
+    flatNdiInstallDeleted: status.flatNdiInstall?.deletedLegacy,
+    legacyEasyWorshipSongsDeleted: status.legacyEasyWorshipSongs?.deletedLegacy,
+    legacyEasyWorshipLyricsDeleted: status.legacyEasyWorshipLyrics?.deletedLegacy,
+    legacyPresentationLyricsDeleted: status.legacyPresentationLyrics?.deletedLegacy,
+  });
+}
+
+function summarizeAppMetrics() {
+  try {
+    return app.getAppMetrics().map((metric) => ({
+      type: metric.type,
+      pid: metric.pid,
+      cpuPercent: metric.cpu?.percentCPUUsage,
+      memory: metric.memory,
+    }));
+  } catch (error) {
+    return { error: error?.message || String(error) };
+  }
+}
+
+async function logResourceDiagnostics(reason) {
+  if (resourceDiagnosticsPending) return;
+  resourceDiagnosticsPending = true;
+  try {
+    const systemMemory = typeof process.getSystemMemoryInfo === 'function'
+      ? process.getSystemMemoryInfo()
+      : null;
+    const mainProcessMemory = typeof process.getProcessMemoryInfo === 'function'
+      ? await process.getProcessMemoryInfo()
+      : null;
+
+    writeLog('APP_RESOURCE', reason, {
+      systemMemory,
+      mainProcessMemory,
+      appMetrics: summarizeAppMetrics(),
+    });
+  } catch (error) {
+    writeLog('APP_RESOURCE_ERROR', reason, error);
+  } finally {
+    resourceDiagnosticsPending = false;
+  }
+}
+
+function startResourceDiagnostics() {
+  if (resourceDiagnosticsTimer) return;
+
+  app.whenReady()
+    .then(() => logResourceDiagnostics('startup'))
+    .catch((error) => writeLog('APP_RESOURCE_ERROR', 'startup', error));
+
+  resourceDiagnosticsTimer = setInterval(() => {
+    logResourceDiagnostics('interval');
+  }, RESOURCE_LOG_INTERVAL_MS);
+  resourceDiagnosticsTimer.unref?.();
+
+  app.once('before-quit', () => {
+    if (resourceDiagnosticsTimer) {
+      clearInterval(resourceDiagnosticsTimer);
+      resourceDiagnosticsTimer = null;
+    }
+  });
+}
+
+export function initFileLogging(options = {}) {
+  if (initialized) return getLogPaths();
+  initialized = true;
+  originals = {
+    log: console.log.bind(console),
+    info: console.info.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console),
+    debug: console.debug.bind(console),
+  };
+
+  try {
+    logDir = resolveLogDir();
+    fs.mkdirSync(logDir, { recursive: true });
+    logFilePath = path.join(logDir, createSessionLogFileName());
+    latestLogFilePath = path.join(logDir, 'latest.log');
+    rotateLogs(logFilePath);
+    fs.closeSync(fs.openSync(logFilePath, 'a'));
+    currentLogBytes = getFileSize(logFilePath);
+    fileLoggingReady = true;
+    logContext = {
+      sessionId: options.sessionId || randomUUID(),
+      process: 'main',
+      pid: process.pid,
+    };
+    batchedWriter = new BatchedLogWriter({
+      writeBatch: appendBatchToLogFile,
+      onError: (error) => {
+        fileLoggingReady = false;
+        warnLoggingFailure('[Logging] Failed to write log file:', error);
+      },
+      formatDropNotice: (count) => formatRecord('WARN', 'Buffered log entries dropped during overload', {
+        source: 'logger',
+        droppedCount: count,
+      }),
+    });
+    const pruneStats = pruneLogFolder({ preservePaths: [logFilePath] });
+    if (pruneStats?.deletedFiles > 0) {
+      writeLog('INFO', 'Log retention pruning completed', pruneStats);
+    }
+    try {
+      fs.writeFileSync(latestLogFilePath, logFilePath, 'utf8');
+    } catch (error) {
+      originals.warn('[Logging] Failed to write latest log pointer:', error);
+    }
+  } catch (error) {
+    originals.warn('[Logging] Failed to initialize file logging:', error);
+    return getLogPaths();
+  }
+
+  ['log', 'info', 'warn', 'error', 'debug'].forEach((method) => {
+    console[method] = (...args) => {
+      try {
+        originals[method](...args);
+      } catch {
+      }
+      writeLog(method.toUpperCase(), ...args);
+    };
+  });
+
+  process.on('uncaughtExceptionMonitor', (error) => {
+    writeLog('FATAL', 'Uncaught exception:', error?.stack || error);
+    try {
+      originals.error('[Logging] Uncaught exception:', error);
+    } catch {
+    }
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    writeLog('FATAL', 'Unhandled rejection:', reason?.stack || reason);
+    try {
+      originals.error('[Logging] Unhandled rejection:', reason);
+    } catch {
+    }
+  });
+
+  process.on('warning', (warning) => {
+    writeLog('PROCESS_WARNING', {
+      name: warning?.name,
+      code: warning?.code,
+      message: warning?.message,
+      stack: warning?.stack,
+    });
+  });
+
+  writeLog('INFO', 'Logging initialized', {
+    appName: app.getName?.(),
+    version: app.getVersion?.(),
+    packaged: app.isPackaged,
+    build: getRuntimeBuildInfo(),
+    logFilePath,
+  });
+  logUserDataMigrationStatus();
+  startResourceDiagnostics();
+
+  return getLogPaths();
+}
+
+export async function flushFileLogs({ timeoutMs = 1500 } = {}) {
+  if (!batchedWriter || !fileLoggingReady) return true;
+  let timeout;
+  try {
+    return await Promise.race([
+      batchedWriter.flushAll(),
+      new Promise((resolve) => {
+        timeout = setTimeout(() => resolve(false), Math.max(100, timeoutMs));
+        timeout.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+export async function clearAllFileLogs() {
+  if (clearingLogs) {
+    return { success: false, error: 'System logs are already being cleared.' };
+  }
+
+  clearingLogs = true;
+  let targetLogDir = null;
+  try {
+    targetLogDir = path.resolve(logDir || resolveLogDir());
+    const expectedLogDir = path.resolve(resolveLogDir());
+    const userDataDir = path.resolve(app.getPath('userData'));
+    if (targetLogDir !== expectedLogDir || targetLogDir === userDataDir) {
+      throw new Error('Resolved log directory failed safety validation');
+    }
+
+    await flushFileLogs({ timeoutMs: 3000 });
+    fileLoggingReady = false;
+    await fs.promises.mkdir(targetLogDir, { recursive: true });
+    const { removedEntries } = await clearLogDirectoryContents(targetLogDir);
+
+    const existingSessionPathIsSafe = Boolean(
+      logFilePath
+      && path.resolve(path.dirname(logFilePath)) === targetLogDir
+    );
+    logDir = targetLogDir;
+    logFilePath = existingSessionPathIsSafe
+      ? logFilePath
+      : path.join(targetLogDir, createSessionLogFileName());
+    latestLogFilePath = path.join(targetLogDir, 'latest.log');
+
+    await fs.promises.writeFile(logFilePath, '', 'utf8');
+    await fs.promises.writeFile(latestLogFilePath, logFilePath, 'utf8');
+    currentLogBytes = 0;
+    fileLoggingReady = true;
+
+    return { success: true, removedEntries };
+  } catch (error) {
+    try {
+      if (targetLogDir) {
+        await fs.promises.mkdir(targetLogDir, { recursive: true });
+        if (!logFilePath || path.resolve(path.dirname(logFilePath)) !== targetLogDir) {
+          logFilePath = path.join(targetLogDir, createSessionLogFileName());
+        }
+        latestLogFilePath = path.join(targetLogDir, 'latest.log');
+        const handle = await fs.promises.open(logFilePath, 'a');
+        await handle.close();
+        await fs.promises.writeFile(latestLogFilePath, logFilePath, 'utf8');
+        currentLogBytes = getFileSize(logFilePath);
+        fileLoggingReady = true;
+      }
+    } catch {
+      fileLoggingReady = false;
+    }
+    warnLoggingFailure('[Logging] Failed to clear system logs:', error);
+    return { success: false, error: error?.message || 'Could not clear system logs.' };
+  } finally {
+    clearingLogs = false;
+  }
+}
+
+export function getLogBufferStats() {
+  return batchedWriter?.getStats() || null;
+}
+
+export function mirrorStreamToLog(stream, level, targetStream = null, context = {}) {
+  if (!stream) return;
+  stream.on('data', (chunk) => {
+    const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+    if (targetStream?.write) {
+      try {
+        targetStream.write(text);
+      } catch {
+      }
+    }
+    writeRawLog(level, text, context);
+  });
+}
