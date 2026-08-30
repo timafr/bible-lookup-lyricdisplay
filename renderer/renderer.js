@@ -10,7 +10,7 @@ const state = {
   language: 'ru',
   translationId: 'synodal',
   licenseVerified: false,
-  listener: { active: false, recognition: null, lastKey: '', lastAt: 0, mode: 'auto', threshold: 78, transcript: '', selectedDeviceId: '', audioBackend: 'standard', asioDriver: '', microphoneStream: null },
+  listener: { active: false, recognition: null, lastKey: '', lastAt: 0, mode: 'auto', threshold: 78, transcript: '', selectedDeviceId: '', audioBackend: 'standard', asioDriver: '', microphoneStream: null, speechProvider: 'auto', yandexAudio: null },
 };
 
 const elements = {
@@ -553,17 +553,111 @@ async function testMicrophone() {
     showMessage(microphoneErrorText(error), 'error');
   }
 }
+
+async function refreshYandexStatus() {
+  const status = document.getElementById('yandex-status');
+  try {
+    const result = await window.desktopApi.getYandexStatus();
+    if (status) status.textContent = result.configured ? 'Ключ сохранён локально' : 'Ключ не настроен';
+  } catch {
+    if (status) status.textContent = 'Настройка недоступна';
+  }
+}
+function wireYandexSettings() {
+  const input = document.getElementById('yandex-api-key');
+  const save = document.getElementById('yandex-save');
+  const test = document.getElementById('yandex-test');
+  const status = document.getElementById('yandex-status');
+  save?.addEventListener('click', async () => {
+    try {
+      const result = await window.desktopApi.saveYandexKey(input?.value || '');
+      if (input) input.value = '';
+      if (status) status.textContent = result.configured ? 'Ключ сохранён локально' : 'Ключ удалён';
+    } catch (error) {
+      if (status) status.textContent = error.message || 'Не удалось сохранить ключ';
+    }
+  });
+  test?.addEventListener('click', async () => {
+    if (status) status.textContent = 'Проверяю Authorization…';
+    try {
+      const result = await window.desktopApi.testYandexKey();
+      if (status) status.textContent = result.message;
+    } catch (error) {
+      if (status) status.textContent = error.message || 'Yandex недоступен';
+    }
+  });
+  refreshYandexStatus();
+}
+
+function floatToPcm16(samples) {
+  const output = new Int16Array(samples.length);
+  for (let index = 0; index < samples.length; index += 1) { const value = Math.max(-1, Math.min(1, samples[index])); output[index] = value < 0 ? value * 0x8000 : value * 0x7fff; }
+  return output;
+}
+function resampleTo16k(samples, inputRate) {
+  if (inputRate === 16000) return samples;
+  const ratio = inputRate / 16000;
+  const length = Math.max(1, Math.round(samples.length / ratio));
+  const output = new Float32Array(length);
+  for (let index = 0; index < length; index += 1) output[index] = samples[Math.min(samples.length - 1, Math.round(index * ratio))];
+  return output;
+}
+function pcmBase64(pcm) {
+  const bytes = new Uint8Array(pcm.buffer);
+  let binary = '';
+  const step = 0x8000;
+  for (let index = 0; index < bytes.length; index += step) binary += String.fromCharCode(...bytes.subarray(index, Math.min(bytes.length, index + step)));
+  return btoa(binary);
+}
+async function sendYandexPcm(samples, sampleRate) {
+  const pcm = floatToPcm16(resampleTo16k(samples, sampleRate));
+  const result = await window.desktopApi.recognizeYandex({ base64: pcmBase64(pcm) });
+  if (result?.text) await handleListenerResult(result.text, result.confidence || 0);
+}
+async function startYandexRecognition(stream) {
+  stopYandexRecognition();
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) throw new Error('AudioContext недоступен для Yandex SpeechKit.');
+  const context = new AudioContextClass();
+  const source = context.createMediaStreamSource(stream);
+  const processor = context.createScriptProcessor(4096, 1, 1);
+  const chunks = [];
+  let total = 0;
+  let busy = false;
+  processor.onaudioprocess = async (event) => {
+    const data = event.inputBuffer.getChannelData(0).slice();
+    chunks.push(data); total += data.length;
+    if (total < context.sampleRate * 2 || busy) return;
+    const merged = new Float32Array(total); let offset = 0;
+    for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.length; }
+    chunks.length = 0; total = 0; busy = true;
+    try { await sendYandexPcm(merged, context.sampleRate); } catch (error) { showMessage(`Yandex SpeechKit: ${error.message || error}`, 'error'); } finally { busy = false; }
+  };
+  source.connect(processor); processor.connect(context.destination); await context.resume();
+  state.listener.yandexAudio = { context, source, processor };
+  setListenerStatus(true, 'Yandex SpeechKit слушает');
+}
+function stopYandexRecognition() {
+  const audio = state.listener.yandexAudio;
+  if (!audio) return;
+  audio.processor.onaudioprocess = null;
+  audio.source.disconnect(); audio.processor.disconnect(); audio.context.close().catch(() => {});
+  state.listener.yandexAudio = null;
+}
 async function toggleListener() {
-  if (state.listener.active) { state.listener.active = false; state.listener.recognition?.stop(); state.listener.microphoneStream?.getTracks().forEach((track) => track.stop()); state.listener.microphoneStream = null; stopMicrophoneMeter(); updateListenerControls(); setListenerStatus(false, 'Слушатель выключен'); return; }
+  if (state.listener.active) { state.listener.active = false; state.listener.recognition?.stop(); state.listener.microphoneStream?.getTracks().forEach((track) => track.stop()); state.listener.microphoneStream = null; stopYandexRecognition(); stopMicrophoneMeter(); updateListenerControls(); setListenerStatus(false, 'Слушатель выключен'); return; }
   try {
     const stream = await openMicrophoneStream();
     state.listener.microphoneStream = stream;
     startMicrophoneMeter(stream);
     state.preferences = { ...state.preferences, microphoneDeviceId: state.listener.selectedDeviceId, audioBackend: state.listener.audioBackend, asioDriver: state.listener.asioDriver };
     await window.desktopApi.savePreferences(state.preferences);
-    state.listener.recognition = createRecognition();
     state.listener.active = true;
-    state.listener.recognition.start();
+    if (state.listener.speechProvider !== 'browser') {
+      try { await startYandexRecognition(stream); } catch (error) {
+        if (state.listener.speechProvider === 'auto') { showMessage('Yandex недоступен — переключаюсь на Web Speech.', 'info'); state.listener.recognition = createSpeechRecognition(); state.listener.recognition.start(); } else { throw error; }
+      }
+    } else { state.listener.recognition = createSpeechRecognition(); state.listener.recognition.start(); }
     updateListenerControls();
     showMessage('Слушатель включён. LyricDisplay будет переключаться по найденным словам.', 'success');
   } catch (error) {
@@ -837,7 +931,7 @@ async function initialise() {
     state.listener.mode = state.preferences.listenerMode === 'suggest' ? 'suggest' : 'auto';
     state.listener.threshold = Number(state.preferences.listenerThreshold) || 78;
     state.listener.selectedDeviceId = state.preferences.microphoneDeviceId || '';
-    state.listener.audioBackend = state.preferences.audioBackend === 'asio' ? 'asio' : 'standard'; state.listener.asioDriver = state.preferences.asioDriver || '';
+    state.listener.audioBackend = state.preferences.audioBackend === 'asio' ? 'asio' : 'standard'; state.listener.speechProvider = ['auto', 'cloud', 'browser'].includes(state.preferences.speechProvider) ? state.preferences.speechProvider : 'auto'; state.listener.asioDriver = state.preferences.asioDriver || '';
     state.plan = Array.isArray(state.preferences.plan) ? state.preferences.plan.filter((item) => resultFromPosition(item)) : [];
     state.searchIndex = [];
     bible.books.forEach((book) => {
@@ -896,7 +990,8 @@ elements.translationModern.addEventListener('click', () => selectTranslation('mo
 elements.licenseCheckButton.addEventListener('click', checkLicense);
 elements.listenerToggle.addEventListener('click', toggleListener);
 document.getElementById('microphone-test')?.addEventListener('click', testMicrophone);
-elements.microphoneSelect?.addEventListener('change', async () => { state.listener.selectedDeviceId = elements.microphoneSelect.value; state.preferences = { ...state.preferences, microphoneDeviceId: state.listener.selectedDeviceId }; await window.desktopApi.savePreferences(state.preferences); if (state.listener.active) { state.listener.active = false; state.listener.recognition?.stop(); state.listener.microphoneStream?.getTracks().forEach((track) => track.stop()); state.listener.microphoneStream = null; stopMicrophoneMeter(); updateListenerControls(); setListenerStatus(false, 'Микрофон изменён — нажмите «Начать слушать»'); } });
+wireYandexSettings();
+elements.microphoneSelect?.addEventListener('change', async () => { state.listener.selectedDeviceId = elements.microphoneSelect.value; state.preferences = { ...state.preferences, microphoneDeviceId: state.listener.selectedDeviceId }; await window.desktopApi.savePreferences(state.preferences); if (state.listener.active) { state.listener.active = false; state.listener.recognition?.stop(); state.listener.microphoneStream?.getTracks().forEach((track) => track.stop()); state.listener.microphoneStream = null; stopYandexRecognition(); stopMicrophoneMeter(); updateListenerControls(); setListenerStatus(false, 'Микрофон изменён — нажмите «Начать слушать»'); } });
 elements.microphoneSelect?.addEventListener('focus', () => refreshMicrophones({ requestPermission: true }).catch(() => {}));
 elements.audioBackendSelect?.addEventListener('change', async () => { state.listener.audioBackend = elements.audioBackendSelect.value === 'asio' ? 'asio' : 'standard'; state.preferences = { ...state.preferences, audioBackend: state.listener.audioBackend }; await window.desktopApi.savePreferences(state.preferences); if (state.listener.audioBackend === 'asio') showMessage('ASIO bridge будет использоваться после установки нативного модуля; сейчас выбранный микрофон работает через Windows audio.', 'info'); });
 elements.listenerMode.addEventListener('change', async () => { state.listener.mode = elements.listenerMode.value; state.preferences = { ...state.preferences, listenerMode: state.listener.mode }; await window.desktopApi.savePreferences(state.preferences); });

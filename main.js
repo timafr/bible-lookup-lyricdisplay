@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session } = require('electron');
+const { app, BrowserWindow, ipcMain, session, safeStorage } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -33,6 +33,30 @@ function writePreferences(preferences) {
   const destination = preferencesPath();
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.writeFileSync(destination, JSON.stringify(preferences, null, 2), 'utf8');
+}
+
+
+function yandexKeyPath() { return path.join(app.getPath('userData'), 'yandex-speechkit.key'); }
+function hasYandexKey() { try { return fs.existsSync(yandexKeyPath()) && fs.statSync(yandexKeyPath()).size > 0; } catch { return false; } }
+function readYandexKey() { try { if (!hasYandexKey()) return ''; const encrypted = fs.readFileSync(yandexKeyPath()); return safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(encrypted) : ''; } catch { return ''; } }
+function saveYandexKey(value) { const key = String(value || '').trim(); if (!key) { try { fs.rmSync(yandexKeyPath(), { force: true }); } catch {} return false; } if (!safeStorage.isEncryptionAvailable()) throw new Error('Защищённое хранилище Windows недоступно.'); fs.mkdirSync(path.dirname(yandexKeyPath()), { recursive: true }); fs.writeFileSync(yandexKeyPath(), safeStorage.encryptString(key)); return true; }
+async function testYandexKey() {
+  const key = readYandexKey();
+  if (!key) return { ok: false, message: 'API-ключ Yandex не сохранён.' };
+  const response = await fetch('https://stt.api.cloud.yandex.net/speech/v1/stt:recognize?lang=ru-RU&format=lpcm&sampleRateHertz=16000', { method: 'POST', headers: { Authorization: `Api-Key ${key}`, 'Content-Type': 'application/octet-stream' }, body: Buffer.alloc(0) });
+  if (response.status === 401 || response.status === 403) return { ok: false, message: 'Yandex отклонил API-ключ или у него нет права SpeechKit.' };
+  if (response.status >= 500) return { ok: false, message: `Yandex временно недоступен (${response.status}).` };
+  return { ok: true, message: 'API-ключ принят Yandex SpeechKit. Folder ID не требуется.' };
+}
+async function recognizeYandexAudio(payload) {
+  const key = readYandexKey();
+  if (!key) throw new Error('API-ключ Yandex не сохранён.');
+  const audio = Buffer.from(String(payload?.base64 || ''), 'base64');
+  if (!audio.length) return { text: '', confidence: 0 };
+  const response = await fetch('https://stt.api.cloud.yandex.net/speech/v1/stt:recognize?lang=ru-RU&format=lpcm&sampleRateHertz=16000', { method: 'POST', headers: { Authorization: `Api-Key ${key}`, 'Content-Type': 'application/octet-stream' }, body: audio });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error_message || `Yandex SpeechKit HTTP ${response.status}`);
+  return { text: body.result || '', confidence: 0 };
 }
 
 function getAsioStatus() {
@@ -98,6 +122,10 @@ app.whenReady().then(() => {
     return true;
   });
   ipcMain.handle('audio:asio-status', () => getAsioStatus());
+  ipcMain.handle('yandex:status', () => ({ configured: hasYandexKey(), authMode: 'api-key', folderIdRequired: false }));
+  ipcMain.handle('yandex:save-key', (_event, value) => ({ configured: saveYandexKey(value), authMode: 'api-key', folderIdRequired: false }));
+  ipcMain.handle('yandex:test-key', () => testYandexKey());
+  ipcMain.handle('yandex:recognize', (_event, payload) => recognizeYandexAudio(payload));
 
   createWindow();
 

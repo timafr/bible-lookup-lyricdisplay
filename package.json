@@ -1,6 +1,6 @@
 {
   "name": "bible-lookup-lyricdisplay",
-  "version": "1.5.3",
+  "version": "1.5.5",
   "description": "Offline Russian Synodal Bible lookup with LyricDisplay integration.",
   "main": "main.js",
   "author": "Local ministry tool",

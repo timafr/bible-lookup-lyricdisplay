@@ -243,3 +243,10 @@ body { background:radial-gradient(circle at 82% 8%,#193759 0,#081527 35%,#050d18
 .lyric-row:hover { transform:translateX(3px); border-color:rgba(120,169,255,.55); }
 .message { border-radius:8px; }
 @media (max-width:760px) { .shell { padding-top:18px; } .topbar { margin:-18px -18px 0; padding:14px 18px; } .hero { padding-top:48px; } }
+
+/* SpeechKit controls: explicit cloud provider status without exposing the secret in the UI after save. */
+.speechkit-settings { display:grid; grid-template-columns:minmax(170px,1fr) minmax(180px,1.3fr) auto auto; align-items:center; gap:10px; margin-top:12px; padding:12px 14px; border:1px solid rgba(120,169,255,.18); border-radius:9px; background:rgba(7,19,34,.5); }
+.speechkit-settings > div { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.speechkit-settings > div span:last-child { color:var(--green); font-size:11px; line-height:1.25; }
+.speechkit-settings input { min-width:0; }
+@media (max-width:760px) { .speechkit-settings { grid-template-columns:1fr; } }
