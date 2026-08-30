@@ -10,7 +10,7 @@ const state = {
   language: 'ru',
   translationId: 'synodal',
   licenseVerified: false,
-  listener: { active: false, recognition: null, lastKey: '', lastAt: 0, mode: 'auto', threshold: 78, transcript: '', selectedDeviceId: '', audioBackend: 'standard', asioDriver: '' },
+  listener: { active: false, recognition: null, lastKey: '', lastAt: 0, mode: 'auto', threshold: 78, transcript: '', selectedDeviceId: '', audioBackend: 'standard', asioDriver: '', microphoneStream: null },
 };
 
 const elements = {
@@ -162,10 +162,29 @@ async function refreshMicrophones({ requestPermission = false } = {}) {
 }
 
 function selectedAudioConstraints() {
-  if (state.listener.audioBackend === 'asio') {
-    showMessage('ASIO bridge ещё не установлен в этой сборке. Используется выбранный микрофон Windows audio.', 'info');
-  }
+  if (state.listener.audioBackend === 'asio') showMessage(state.listener.asioDriver ? `Выбран ${state.listener.asioDriver}. Для распознавания будет использован Windows audio fallback, если native ASIO bridge недоступен.` : 'ASIO-драйвер не выбран. Выберите X AIR ASIO или используйте Windows audio.');
   return state.listener.selectedDeviceId ? { deviceId: { exact: state.listener.selectedDeviceId } } : true;
+}
+async function openMicrophoneStream() {
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+    throw new DOMException('В этой сборке Electron недоступен mediaDevices. Запустите exe-файл приложения, а не HTML-файл.', 'NotSupportedError');
+  }
+  try {
+    return await navigator.mediaDevices.getUserMedia({ audio: selectedAudioConstraints() });
+  } catch (firstError) {
+    if (state.listener.selectedDeviceId && ['OverconstrainedError', 'NotFoundError', 'AbortError'].includes(firstError?.name)) {
+      state.listener.selectedDeviceId = '';
+      if (elements.microphoneSelect) elements.microphoneSelect.value = '';
+      return await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
+    throw firstError;
+  }
+}
+function microphoneErrorText(error) {
+  const code = error?.name || 'UnknownError';
+  const details = error?.message || 'без дополнительного описания';
+  const hint = code === 'NotAllowedError' ? 'Разрешите доступ к микрофону для приложения в Windows: Параметры → Конфиденциальность и безопасность → Микрофон. Затем перезапустите программу.' : code === 'NotFoundError' ? 'Windows не видит аудиовход. Проверьте USB/X AIR, кабель, включённый микрофон и настройки звука Windows.' : code === 'OverconstrainedError' ? 'Сохранённое устройство отключено. Выберите микрофон заново.' : code === 'NotSupportedError' ? 'Запустите последнюю Windows-сборку приложения, а не HTML-файл.' : 'Проверьте, не занят ли вход другой программой и доступен ли он в Windows Sound settings.';
+  return `Ошибка микрофона (${code}): ${details}. ${hint}`;
 }
 
 function setListenerStatus(active, text) {
@@ -482,28 +501,21 @@ function createSpeechRecognition() {
 }
 
 async function toggleListener() {
-  if (state.listener.active) {
-    state.listener.active = false;
-    state.listener.recognition?.stop();
-    setListenerStatus(false, 'Слушатель выключен');
-    updateListenerControls();
-    return;
-  }
+  if (state.listener.active) { state.listener.active = false; state.listener.recognition?.stop(); state.listener.microphoneStream?.getTracks().forEach((track) => track.stop()); state.listener.microphoneStream = null; updateListenerControls(); setListenerStatus(false, 'Слушатель выключен'); return; }
   try {
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error('Windows не предоставил доступ к микрофону этому приложению.');
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: selectedAudioConstraints() });
-    stream.getTracks().forEach((track) => track.stop());
-    state.preferences = { ...state.preferences, microphoneDeviceId: state.listener.selectedDeviceId, audioBackend: state.listener.audioBackend };
+    const stream = await openMicrophoneStream();
+    state.listener.microphoneStream = stream;
+    state.preferences = { ...state.preferences, microphoneDeviceId: state.listener.selectedDeviceId, audioBackend: state.listener.audioBackend, asioDriver: state.listener.asioDriver };
     await window.desktopApi.savePreferences(state.preferences);
-    state.listener.recognition = createSpeechRecognition();
+    state.listener.recognition = createRecognition();
     state.listener.active = true;
     state.listener.recognition.start();
     updateListenerControls();
-    showMessage('Слушатель включён. Говорите ссылку на место Писания.', 'success');
+    showMessage('Слушатель включён. LyricDisplay будет переключаться по найденным словам.', 'success');
   } catch (error) {
     state.listener.active = false;
     updateListenerControls();
-    showMessage(error.message || 'Не удалось получить доступ к микрофону.', 'error');
+    showMessage(microphoneErrorText(error), 'error');
   }
 }
 
@@ -802,7 +814,7 @@ async function initialise() {
     updateListenerControls();
     elements.audioBackendSelect.value = state.listener.audioBackend;
     try { const asio = await window.desktopApi.getAsioStatus(); const option = elements.audioBackendSelect.querySelector('option[value="asio"]'); if (option) option.textContent = asio.available ? `ASIO bridge (${asio.devices.length} устройств)` : 'ASIO bridge (не найден)'; } catch { /* optional native bridge */ }
-    try { await refreshMicrophones(); } catch (error) { if (elements.microphoneHelp) elements.microphoneHelp.textContent = `Разрешите доступ к микрофону перед выбором устройства. ${error.message || ''}`; }
+    try { await refreshMicrophones({ requestPermission: true }); } catch (error) { if (elements.microphoneHelp) elements.microphoneHelp.textContent = `Разрешите доступ к микрофону перед выбором устройства. ${error.message || ''}`; }
     navigator.mediaDevices?.addEventListener('devicechange', () => refreshMicrophones().catch(() => {}));
     setListenerStatus(false, 'Слушатель выключен');
     showMessage(state.language === 'en' ? 'Synodal Bible database is ready. Start with a reference such as “John 3:16”.' : 'База Синодального перевода готова к поиску. Начните с ссылки, например «Иоанна 3:16».');
@@ -829,7 +841,7 @@ elements.translationSynodal.addEventListener('click', () => selectTranslation('s
 elements.translationModern.addEventListener('click', () => selectTranslation('modern'));
 elements.licenseCheckButton.addEventListener('click', checkLicense);
 elements.listenerToggle.addEventListener('click', toggleListener);
-elements.microphoneSelect?.addEventListener('change', async () => { state.listener.selectedDeviceId = elements.microphoneSelect.value; state.preferences = { ...state.preferences, microphoneDeviceId: state.listener.selectedDeviceId }; await window.desktopApi.savePreferences(state.preferences); if (state.listener.active) { state.listener.active = false; state.listener.recognition?.stop(); updateListenerControls(); setListenerStatus(false, 'Микрофон изменён — нажмите «Начать слушать»'); } });
+elements.microphoneSelect?.addEventListener('change', async () => { state.listener.selectedDeviceId = elements.microphoneSelect.value; state.preferences = { ...state.preferences, microphoneDeviceId: state.listener.selectedDeviceId }; await window.desktopApi.savePreferences(state.preferences); if (state.listener.active) { state.listener.active = false; state.listener.recognition?.stop(); state.listener.microphoneStream?.getTracks().forEach((track) => track.stop()); state.listener.microphoneStream = null; updateListenerControls(); setListenerStatus(false, 'Микрофон изменён — нажмите «Начать слушать»'); } });
 elements.microphoneSelect?.addEventListener('focus', () => refreshMicrophones({ requestPermission: true }).catch(() => {}));
 elements.audioBackendSelect?.addEventListener('change', async () => { state.listener.audioBackend = elements.audioBackendSelect.value === 'asio' ? 'asio' : 'standard'; state.preferences = { ...state.preferences, audioBackend: state.listener.audioBackend }; await window.desktopApi.savePreferences(state.preferences); if (state.listener.audioBackend === 'asio') showMessage('ASIO bridge будет использоваться после установки нативного модуля; сейчас выбранный микрофон работает через Windows audio.', 'info'); });
 elements.listenerMode.addEventListener('change', async () => { state.listener.mode = elements.listenerMode.value; state.preferences = { ...state.preferences, listenerMode: state.listener.mode }; await window.desktopApi.savePreferences(state.preferences); });

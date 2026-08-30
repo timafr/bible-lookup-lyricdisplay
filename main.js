@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 app.disableHardwareAcceleration();
+app.commandLine.appendSwitch('enable-media-stream');
 
 let mainWindow;
 let bibleDataCache;
@@ -39,17 +40,17 @@ function getAsioStatus() {
   if (process.platform === 'win32') {
     const { execFileSync } = require('child_process');
     const roots = [
-      ['HKLM\\SOFTWARE\\ASIO', '64-bit'],
-      ['HKLM\\SOFTWARE\\WOW6432Node\\ASIO', '32-bit'],
-      ['HKCU\\Software\\ASIO', 'user'],
+      ['HKLM\\SOFTWARE\\ASIO', '64-bit', '/reg:64'],
+      ['HKLM\\SOFTWARE\\WOW6432Node\\ASIO', '32-bit', '/reg:32'],
+      ['HKCU\\Software\\ASIO', 'user', ''],
     ];
-    for (const [root, architecture] of roots) {
+    for (const [root, architecture, registryView] of roots) {
       try {
-        const output = execFileSync('reg.exe', ['query', root, '/s'], { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+        const output = execFileSync('reg.exe', ['query', root, '/s', ...(registryView ? [registryView] : [])], { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
         let current;
         for (const line of output.split(/\r?\n/)) {
           const key = line.match(/^HKEY[^\s]+/i);
-          if (key) { current = { registryPath: key[0], architecture, name: key[0].split('\\').pop(), description: '' }; if (/\\ASIO(?:\\|$)/i.test(key[0])) registered.push(current); continue; }
+          if (key) { current = { registryPath: key[0], architecture, name: key[0].split('\\').pop(), description: '' }; if (/\\ASIO\\[^\\]+$/i.test(key[0])) registered.push(current); continue; }
           const value = line.match(/^\s*(Description|CLSID)\s+REG_\w+\s+(.+)$/i);
           if (value && current) current[value[1].toLowerCase()] = value[2].trim();
         }
@@ -87,9 +88,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    callback(permission === 'media');
-  });
+  session.defaultSession.setPermissionCheckHandler((_contents, permission) => permission === 'media');
+  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => callback(permission === 'media'));
 
   ipcMain.handle('bible:load', () => loadBibleData());
   ipcMain.handle('preferences:load', () => readPreferences());
