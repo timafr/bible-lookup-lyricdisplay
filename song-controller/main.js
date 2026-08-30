@@ -12,6 +12,17 @@ function writePreferences(preferences) {
   fs.mkdirSync(path.dirname(preferencesPath()), { recursive: true });
   fs.writeFileSync(preferencesPath(), JSON.stringify(preferences, null, 2), 'utf8');
 }
+function getAsioStatus() {
+  try {
+    const portAudio = require('naudiodon');
+    const devices = typeof portAudio.getDevices === 'function' ? portAudio.getDevices() : [];
+    const asioDevices = devices.filter((device) => /asio/i.test(`${device.hostAPIName || ''} ${device.name || ''}`));
+    return { available: asioDevices.length > 0, devices: asioDevices.map((device) => ({ id: device.id, name: device.name, hostAPIName: device.hostAPIName })) };
+  } catch (error) {
+    return { available: false, devices: [], reason: error.message || 'ASIO module unavailable' };
+  }
+}
+
 function createWindow() {
   const window = new BrowserWindow({
     width: 1080, height: 720, minWidth: 860, minHeight: 560,
@@ -26,6 +37,7 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => callback(permission === 'media'));
   ipcMain.handle('preferences:load', () => readPreferences());
   ipcMain.handle('preferences:save', (_event, preferences) => { writePreferences(preferences); return true; });
+  ipcMain.handle('audio:asio-status', () => getAsioStatus());
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });

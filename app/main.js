@@ -34,6 +34,17 @@ function writePreferences(preferences) {
   fs.writeFileSync(destination, JSON.stringify(preferences, null, 2), 'utf8');
 }
 
+function getAsioStatus() {
+  try {
+    const portAudio = require('naudiodon');
+    const devices = typeof portAudio.getDevices === 'function' ? portAudio.getDevices() : [];
+    const asioDevices = devices.filter((device) => /asio/i.test(`${device.hostAPIName || ''} ${device.name || ''}`));
+    return { available: asioDevices.length > 0, devices: asioDevices.map((device) => ({ id: device.id, name: device.name, hostAPIName: device.hostAPIName })) };
+  } catch (error) {
+    return { available: false, devices: [], reason: error.message || 'ASIO module unavailable' };
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1160,
@@ -65,6 +76,7 @@ app.whenReady().then(() => {
     writePreferences(preferences);
     return true;
   });
+  ipcMain.handle('audio:asio-status', () => getAsioStatus());
 
   createWindow();
 

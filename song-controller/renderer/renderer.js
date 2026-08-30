@@ -2,7 +2,7 @@
 const state = {
   preferences: { serverUrl: 'http://localhost:4000', joinCode: '' },
   socket: null, lyrics: [], selectedIndex: null,
-  listener: { active: false, recognition: null, mode: 'auto', threshold: 78, lastIndex: -1, lastAt: 0 },
+  listener: { active: false, recognition: null, mode: 'auto', threshold: 78, lastIndex: -1, lastAt: 0, selectedDeviceId: '', audioBackend: 'standard' },
 };
 const el = {
   dot: document.querySelector('#connection-dot'), connection: document.querySelector('#connection-label'),
@@ -13,9 +13,20 @@ const el = {
   message: document.querySelector('#message'), listenerToggle: document.querySelector('#listener-toggle'), listenerStatus: document.querySelector('#listener-status'),
   transcript: document.querySelector('#transcript'), match: document.querySelector('#match-status'), mode: document.querySelector('#listener-mode'),
   threshold: document.querySelector('#threshold'), thresholdValue: document.querySelector('#threshold-value'),
+  microphoneSelect: document.querySelector('#microphone-select'), audioBackendSelect: document.querySelector('#audio-backend-select'), microphoneHelp: document.querySelector('#microphone-help'),
 };
 function normalize(value) { return String(value || '').toLowerCase().replace(/ё/g, 'е').replace(/[.,;:!?()[\]{}"'«»—–-]/g, ' ').replace(/\s+/g, ' ').trim(); }
 function setMessage(text, type = '') { el.message.textContent = text; el.message.className = `message ${type}`; }
+async function refreshMicrophones({ requestPermission = false } = {}) {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  if (requestPermission && navigator.mediaDevices.getUserMedia) { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); stream.getTracks().forEach((track) => track.stop()); }
+  const devices = await navigator.mediaDevices.enumerateDevices(); const microphones = devices.filter((device) => device.kind === 'audioinput');
+  el.microphoneSelect.replaceChildren();
+  if (!microphones.length) { const option = document.createElement('option'); option.value = ''; option.textContent = 'Микрофон не найден'; el.microphoneSelect.appendChild(option); return; }
+  microphones.forEach((device, index) => { const option = document.createElement('option'); option.value = device.deviceId; option.textContent = device.label || `Микрофон ${index + 1}`; el.microphoneSelect.appendChild(option); });
+  const available = microphones.some((device) => device.deviceId === state.listener.selectedDeviceId); state.listener.selectedDeviceId = available ? state.listener.selectedDeviceId : microphones[0].deviceId; el.microphoneSelect.value = state.listener.selectedDeviceId;
+}
+function selectedAudioConstraints() { if (state.listener.audioBackend === 'asio') setMessage('ASIO bridge ещё не установлен в этой сборке. Используется выбранный микрофон Windows audio.'); return state.listener.selectedDeviceId ? { deviceId: { exact: state.listener.selectedDeviceId } } : true; }
 function setConnected(connected, label) { el.dot.className = `dot ${connected ? 'online' : ''}`; el.connection.textContent = label; }
 function lineText(line) { if (typeof line === 'string') return line; return line?.displayText || [line?.line1, line?.line2].filter(Boolean).join(' ') || line?.mainLine || ''; }
 function renderLyrics() {
@@ -88,10 +99,13 @@ function createRecognition() {
 }
 async function toggleListener() {
   if (state.listener.active) { state.listener.active = false; state.listener.recognition?.stop(); el.listenerStatus.textContent = 'Остановлен'; el.listenerToggle.textContent = 'Начать слушать'; return; }
-  try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); stream.getTracks().forEach((track) => track.stop()); state.listener.recognition = createRecognition(); state.listener.active = true; state.listener.recognition.start(); el.listenerToggle.textContent = 'Пауза слушателя'; setMessage('Слушатель включён. LyricDisplay будет переключаться по найденным словам.', 'success'); } catch (error) { setMessage(error.message, 'error'); }
+  try { const stream = await navigator.mediaDevices.getUserMedia({ audio: selectedAudioConstraints() }); stream.getTracks().forEach((track) => track.stop()); state.preferences = { ...state.preferences, microphoneDeviceId: state.listener.selectedDeviceId, audioBackend: state.listener.audioBackend }; await window.desktopApi.savePreferences(state.preferences); state.listener.recognition = createRecognition(); state.listener.active = true; state.listener.recognition.start(); el.listenerToggle.textContent = 'Пауза слушателя'; setMessage('Слушатель включён. LyricDisplay будет переключаться по найденным словам.', 'success'); } catch (error) { setMessage(error.message, 'error'); }
 }
 el.settingsButton.addEventListener('click', () => el.settingsDialog.showModal()); el.settingsForm.addEventListener('submit', (event) => { event.preventDefault(); connect(); }); el.test.addEventListener('click', testConnection); el.refresh.addEventListener('click', () => state.socket?.emit('requestCurrentState')); el.listenerToggle.addEventListener('click', toggleListener);
+el.microphoneSelect?.addEventListener('change', async () => { state.listener.selectedDeviceId = el.microphoneSelect.value; state.preferences = { ...state.preferences, microphoneDeviceId: state.listener.selectedDeviceId }; await window.desktopApi.savePreferences(state.preferences); if (state.listener.active) { state.listener.active = false; state.listener.recognition?.stop(); el.listenerToggle.textContent = 'Начать слушать'; el.listenerStatus.textContent = 'Микрофон изменён — нажмите «Начать слушать»'; } });
+el.microphoneSelect?.addEventListener('focus', () => refreshMicrophones({ requestPermission: true }).catch(() => {}));
+el.audioBackendSelect?.addEventListener('change', async () => { state.listener.audioBackend = el.audioBackendSelect.value === 'asio' ? 'asio' : 'standard'; state.preferences = { ...state.preferences, audioBackend: state.listener.audioBackend }; await window.desktopApi.savePreferences(state.preferences); if (state.listener.audioBackend === 'asio') setMessage('ASIO bridge будет подключён после установки нативного модуля; сейчас используется Windows audio.'); });
 el.mode.addEventListener('change', async () => { state.listener.mode = el.mode.value; await window.desktopApi.savePreferences({ ...state.preferences, listenerMode: state.listener.mode }); });
 el.threshold.addEventListener('input', () => { state.listener.threshold = Number(el.threshold.value); el.thresholdValue.textContent = `${state.listener.threshold}%`; });
 el.threshold.addEventListener('change', async () => window.desktopApi.savePreferences({ ...state.preferences, listenerThreshold: state.listener.threshold }));
-(async function initialise() { const preferences = await window.desktopApi.loadPreferences(); state.preferences = { ...state.preferences, ...preferences }; el.serverUrl.value = state.preferences.serverUrl || 'http://localhost:4000'; el.joinCode.value = state.preferences.joinCode || ''; state.listener.mode = state.preferences.listenerMode === 'suggest' ? 'suggest' : 'auto'; state.listener.threshold = Number(state.preferences.listenerThreshold) || 78; el.mode.value = state.listener.mode; el.threshold.value = state.listener.threshold; el.thresholdValue.textContent = `${state.listener.threshold}%`; renderLyrics(); })();
+(async function initialise() { const preferences = await window.desktopApi.loadPreferences(); state.preferences = { ...state.preferences, ...preferences }; el.serverUrl.value = state.preferences.serverUrl || 'http://localhost:4000'; el.joinCode.value = state.preferences.joinCode || ''; state.listener.mode = state.preferences.listenerMode === 'suggest' ? 'suggest' : 'auto'; state.listener.threshold = Number(state.preferences.listenerThreshold) || 78; state.listener.selectedDeviceId = state.preferences.microphoneDeviceId || ''; state.listener.audioBackend = state.preferences.audioBackend === 'asio' ? 'asio' : 'standard'; el.mode.value = state.listener.mode; el.threshold.value = state.listener.threshold; el.thresholdValue.textContent = `${state.listener.threshold}%`; el.audioBackendSelect.value = state.listener.audioBackend; try { const asio = await window.desktopApi.getAsioStatus(); const option = el.audioBackendSelect.querySelector('option[value="asio"]'); if (option) option.textContent = asio.available ? `ASIO bridge (${asio.devices.length} устройств)` : 'ASIO bridge (не найден)'; } catch { /* optional native bridge */ } renderLyrics(); try { await refreshMicrophones(); } catch (error) { if (el.microphoneHelp) el.microphoneHelp.textContent = `Разрешите доступ к микрофону перед выбором устройства. ${error.message || ''}`; } navigator.mediaDevices?.addEventListener('devicechange', () => refreshMicrophones().catch(() => {})); })();

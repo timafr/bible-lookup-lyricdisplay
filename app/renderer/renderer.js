@@ -10,7 +10,7 @@ const state = {
   language: 'ru',
   translationId: 'synodal',
   licenseVerified: false,
-  listener: { active: false, recognition: null, lastKey: '', lastAt: 0, mode: 'auto', threshold: 78, transcript: '' },
+  listener: { active: false, recognition: null, lastKey: '', lastAt: 0, mode: 'auto', threshold: 78, transcript: '', selectedDeviceId: '', audioBackend: 'standard' },
 };
 
 const elements = {
@@ -56,6 +56,9 @@ const elements = {
   listenerThreshold: document.querySelector('#listener-threshold'),
   listenerThresholdValue: document.querySelector('#listener-threshold-value'),
   listenerDetected: document.querySelector('#listener-detected'),
+  microphoneSelect: document.querySelector('#microphone-select'),
+  audioBackendSelect: document.querySelector('#audio-backend-select'),
+  microphoneHelp: document.querySelector('#microphone-help'),
 };
 
 function normalize(value) {
@@ -136,6 +139,33 @@ function selectTranslation(id) {
 function setConnection(connected, label) {
   elements.connectionDot.className = `status-dot ${connected ? 'status-online' : 'status-offline'}`;
   elements.connectionLabel.textContent = label;
+}
+
+async function refreshMicrophones({ requestPermission = false } = {}) {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  if (requestPermission && navigator.mediaDevices.getUserMedia) {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((track) => track.stop());
+  }
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const microphones = devices.filter((device) => device.kind === 'audioinput');
+  elements.microphoneSelect.replaceChildren();
+  if (!microphones.length) {
+    const option = document.createElement('option'); option.value = ''; option.textContent = 'Микрофон не найден'; elements.microphoneSelect.appendChild(option); return;
+  }
+  microphones.forEach((device, index) => {
+    const option = document.createElement('option'); option.value = device.deviceId; option.textContent = device.label || `Микрофон ${index + 1}`; elements.microphoneSelect.appendChild(option);
+  });
+  const available = microphones.some((device) => device.deviceId === state.listener.selectedDeviceId);
+  state.listener.selectedDeviceId = available ? state.listener.selectedDeviceId : microphones[0].deviceId;
+  elements.microphoneSelect.value = state.listener.selectedDeviceId;
+}
+
+function selectedAudioConstraints() {
+  if (state.listener.audioBackend === 'asio') {
+    showMessage('ASIO bridge ещё не установлен в этой сборке. Используется выбранный микрофон Windows audio.', 'info');
+  }
+  return state.listener.selectedDeviceId ? { deviceId: { exact: state.listener.selectedDeviceId } } : true;
 }
 
 function setListenerStatus(active, text) {
@@ -461,8 +491,10 @@ async function toggleListener() {
   }
   try {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('Windows не предоставил доступ к микрофону этому приложению.');
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: selectedAudioConstraints() });
     stream.getTracks().forEach((track) => track.stop());
+    state.preferences = { ...state.preferences, microphoneDeviceId: state.listener.selectedDeviceId, audioBackend: state.listener.audioBackend };
+    await window.desktopApi.savePreferences(state.preferences);
     state.listener.recognition = createSpeechRecognition();
     state.listener.active = true;
     state.listener.recognition.start();
@@ -738,6 +770,8 @@ async function initialise() {
     state.language = state.preferences.language === 'en' ? 'en' : 'ru';
     state.listener.mode = state.preferences.listenerMode === 'suggest' ? 'suggest' : 'auto';
     state.listener.threshold = Number(state.preferences.listenerThreshold) || 78;
+    state.listener.selectedDeviceId = state.preferences.microphoneDeviceId || '';
+    state.listener.audioBackend = state.preferences.audioBackend === 'asio' ? 'asio' : 'standard';
     state.plan = Array.isArray(state.preferences.plan) ? state.preferences.plan.filter((item) => resultFromPosition(item)) : [];
     state.searchIndex = [];
     bible.books.forEach((book) => {
@@ -766,6 +800,10 @@ async function initialise() {
     applyLanguage(state.language);
     checkLicense();
     updateListenerControls();
+    elements.audioBackendSelect.value = state.listener.audioBackend;
+    try { const asio = await window.desktopApi.getAsioStatus(); const option = elements.audioBackendSelect.querySelector('option[value="asio"]'); if (option) option.textContent = asio.available ? `ASIO bridge (${asio.devices.length} устройств)` : 'ASIO bridge (не найден)'; } catch { /* optional native bridge */ }
+    try { await refreshMicrophones(); } catch (error) { if (elements.microphoneHelp) elements.microphoneHelp.textContent = `Разрешите доступ к микрофону перед выбором устройства. ${error.message || ''}`; }
+    navigator.mediaDevices?.addEventListener('devicechange', () => refreshMicrophones().catch(() => {}));
     setListenerStatus(false, 'Слушатель выключен');
     showMessage(state.language === 'en' ? 'Synodal Bible database is ready. Start with a reference such as “John 3:16”.' : 'База Синодального перевода готова к поиску. Начните с ссылки, например «Иоанна 3:16».');
   } catch (error) {
@@ -791,6 +829,9 @@ elements.translationSynodal.addEventListener('click', () => selectTranslation('s
 elements.translationModern.addEventListener('click', () => selectTranslation('modern'));
 elements.licenseCheckButton.addEventListener('click', checkLicense);
 elements.listenerToggle.addEventListener('click', toggleListener);
+elements.microphoneSelect?.addEventListener('change', async () => { state.listener.selectedDeviceId = elements.microphoneSelect.value; state.preferences = { ...state.preferences, microphoneDeviceId: state.listener.selectedDeviceId }; await window.desktopApi.savePreferences(state.preferences); if (state.listener.active) { state.listener.active = false; state.listener.recognition?.stop(); updateListenerControls(); setListenerStatus(false, 'Микрофон изменён — нажмите «Начать слушать»'); } });
+elements.microphoneSelect?.addEventListener('focus', () => refreshMicrophones({ requestPermission: true }).catch(() => {}));
+elements.audioBackendSelect?.addEventListener('change', async () => { state.listener.audioBackend = elements.audioBackendSelect.value === 'asio' ? 'asio' : 'standard'; state.preferences = { ...state.preferences, audioBackend: state.listener.audioBackend }; await window.desktopApi.savePreferences(state.preferences); if (state.listener.audioBackend === 'asio') showMessage('ASIO bridge будет использоваться после установки нативного модуля; сейчас выбранный микрофон работает через Windows audio.', 'info'); });
 elements.listenerMode.addEventListener('change', async () => { state.listener.mode = elements.listenerMode.value; state.preferences = { ...state.preferences, listenerMode: state.listener.mode }; await window.desktopApi.savePreferences(state.preferences); });
 elements.listenerThreshold.addEventListener('input', () => { state.listener.threshold = Number(elements.listenerThreshold.value); elements.listenerThresholdValue.textContent = `${state.listener.threshold}%`; });
 elements.listenerThreshold.addEventListener('change', async () => { state.preferences = { ...state.preferences, listenerThreshold: state.listener.threshold }; await window.desktopApi.savePreferences(state.preferences); });

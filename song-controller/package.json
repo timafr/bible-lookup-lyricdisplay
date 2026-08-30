@@ -1,6 +1,6 @@
 {
   "name": "lyricdisplay-song-controller",
-  "version": "1.0.0",
+  "version": "1.5.0",
   "description": "Speech-assisted controller for lyrics already loaded in LyricDisplay.",
   "main": "main.js",
   "author": "Local ministry tool",
@@ -21,8 +21,24 @@
     "appId": "org.biblelookup.lyricdisplay.songcontroller",
     "productName": "LyricDisplay Song Controller",
     "asar": true,
-    "files": ["main.js", "preload.js", "renderer/**/*", "node_modules/**/*"],
-    "win": { "target": [{ "target": "dir", "arch": ["x64"] }] },
-    "directories": { "output": "dist" }
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "node_modules/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "directories": {
+      "output": "dist"
+    }
   }
 }
