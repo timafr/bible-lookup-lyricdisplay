@@ -180,12 +180,7 @@ async function openMicrophoneStream() {
     throw firstError;
   }
 }
-function microphoneErrorText(error) {
-  const code = error?.name || 'UnknownError';
-  const details = error?.message || 'без дополнительного описания';
-  const hint = code === 'NotAllowedError' ? 'Разрешите доступ к микрофону для приложения в Windows: Параметры → Конфиденциальность и безопасность → Микрофон. Затем перезапустите программу.' : code === 'NotFoundError' ? 'Windows не видит аудиовход. Проверьте USB/X AIR, кабель, включённый микрофон и настройки звука Windows.' : code === 'OverconstrainedError' ? 'Сохранённое устройство отключено. Выберите микрофон заново.' : code === 'NotSupportedError' ? 'Запустите последнюю Windows-сборку приложения, а не HTML-файл.' : 'Проверьте, не занят ли вход другой программой и доступен ли он в Windows Sound settings.';
-  return `Ошибка микрофона (${code}): ${details}. ${hint}`;
-}
+function microphoneErrorText(error) { return window.lyricDisplayMicrophone.describeError(error); }
 
 function setListenerStatus(active, text) {
   elements.listenerDot.className = `status-dot ${active ? 'status-online' : 'status-offline'}`;

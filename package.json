@@ -12,6 +12,7 @@
     "pack:win": "electron-builder --win portable"
   },
   "dependencies": {
+    "http-proxy": "^1.18.1",
     "socket.io-client": "^4.8.1"
   },
   "devDependencies": {

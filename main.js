@@ -1,12 +1,14 @@
 const { app, BrowserWindow, ipcMain, session, safeStorage } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const { createLyricDisplayLocalBridge } = require('./shared/lyricdisplay-local-bridge');
 
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('enable-media-stream');
 
 let mainWindow;
 let bibleDataCache;
+let localBridge;
 
 function loadBibleData() {
   if (!bibleDataCache) {
@@ -112,6 +114,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  localBridge = createLyricDisplayLocalBridge({ getDefaultTarget: () => readPreferences().serverUrl || 'http://localhost:4000' });
   session.defaultSession.setPermissionCheckHandler((_contents, permission) => permission === 'media');
   session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => callback(permission === 'media'));
 
@@ -137,3 +140,5 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+
+app.on('before-quit', () => localBridge?.close());
